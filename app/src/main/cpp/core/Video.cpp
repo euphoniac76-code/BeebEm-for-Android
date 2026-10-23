@@ -1882,3 +1882,41 @@ int GetVideoRenderedHeight()
     if (h <= 0 || h > BEEBEM_BITMAP_HEIGHT) return BEEBEM_BITMAP_HEIGHT;
     return h;
 }
+
+// The pixmap rows the CRTC displayed in the most recently completed frame
+// (first..last inclusive), and how many pixmap rows make up one TV scanline.
+// Rows outside this band are border (always black), so the Android renderer
+// crops to it and scales the picture to fill the view height.
+//
+// Bitmap modes (0-6) draw one row per scanline. Teletext (mode 7) draws
+// 20 / TeletextStyle rows per 10-scanline character row, starting at the
+// vertical screen adjustment.
+void GetVideoDisplayedRows(int *first, int *last, int *rowsPerScanLine)
+{
+    int f, l, rows;
+
+    if (VideoState.IsTeletext) {
+        rows = 2 / TeletextStyle;
+        f = VScreenAdjust > 0 ? (int)VScreenAdjust : 0;
+        l = f + CRTC_VerticalDisplayed * 20 / TeletextStyle - 1;
+    }
+    else {
+        rows = 1;
+        f = VideoState.PreviousFirstPixmapLine;
+        l = VideoState.PreviousLastPixmapLine;
+    }
+
+    if (rows < 1) rows = 1;
+    if (f < 0) f = 0;
+    if (l > BEEBEM_BITMAP_HEIGHT - 1) l = BEEBEM_BITMAP_HEIGHT - 1;
+
+    // Nothing sensible displayed (e.g. CRTC being reprogrammed): report the whole bitmap.
+    if (l <= f) {
+        f = 0;
+        l = BEEBEM_BITMAP_HEIGHT - 1;
+    }
+
+    *first = f;
+    *last = l;
+    *rowsPerScanLine = rows;
+}
