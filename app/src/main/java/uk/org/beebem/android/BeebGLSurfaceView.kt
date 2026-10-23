@@ -10,6 +10,15 @@ import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
+// How the BBC picture is fitted into the view.
+//   BBC     — the proportions of a BBC Micro on a 4:3 PAL TV (letterboxed)
+//   FOUR_3  — the active area forced to 4:3 (letterboxed)
+//   STRETCH — fill the whole view (the original behaviour)
+enum class AspectMode(val label: String) {
+    BBC("BBC"), FOUR_3("4:3"), STRETCH("Stretch");
+    fun next(): AspectMode = entries[(ordinal + 1) % entries.size]
+}
+
 class BeebGLSurfaceView(context: Context) : GLSurfaceView(context) {
 
     private val renderer = BeebRenderer()
@@ -32,6 +41,10 @@ class BeebGLSurfaceView(context: Context) : GLSurfaceView(context) {
     // Posts to the GL thread via queueEvent — never blocks the caller.
     fun softPause()  { queueEvent { renderer.emulationPaused = true  } }
     fun softResume() { queueEvent { renderer.emulationPaused = false; renderer.quadDirty = true } }
+
+    fun setAspectMode(mode: AspectMode) {
+        queueEvent { renderer.aspectMode = mode; renderer.quadDirty = true }
+    }
 }
 
 private class BeebRenderer : GLSurfaceView.Renderer {
@@ -39,6 +52,7 @@ private class BeebRenderer : GLSurfaceView.Renderer {
     var quadDirty:      Boolean  = true
     // Set via GLSurfaceView.queueEvent — always read/written on the GL thread.
     var emulationPaused: Boolean = false
+    var aspectMode: AspectMode = AspectMode.BBC
 
     private var texId   = 0
     private var progId  = 0
@@ -105,8 +119,8 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         }
     """.trimIndent()
 
-    // Recompute UV coordinates for the active content area and upload to the UV VBO.
-    // Position never changes so the pos VBO is written once in onSurfaceCreated.
+    // Recompute UV coordinates for the active content area and the quad's
+    // position (letterboxed to the chosen aspect), and upload both VBOs.
     private fun recomputeQuad() {
         if (texWidth == 0 || texHeight == 0 || activeW == 0 || activeH == 0) return
 
@@ -125,6 +139,32 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         // Push updated UVs to the GPU VBO.
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, uvVboId)
         GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, uvBuf.capacity() * 4, uvBuf)
+
+        // Position: shrink the quad on one axis so the picture keeps its aspect.
+        // The BBC aspect uses the active width only — the active height
+        // oscillates in split-mode games (e.g. Elite), which would make the
+        // picture wobble, so it is referenced to the full 512-row frame.
+        val target = when (aspectMode) {
+            AspectMode.BBC     -> activeW * BBC_PIXEL_ASPECT / MAX_VIDEO_HEIGHT
+            AspectMode.FOUR_3  -> 4f / 3f
+            AspectMode.STRETCH -> 0f
+        }
+        var sx = 1f
+        var sy = 1f
+        if (target > 0f && surfWidth > 0 && surfHeight > 0) {
+            val surfAspect = surfWidth.toFloat() / surfHeight.toFloat()
+            if (surfAspect > target) sx = target / surfAspect else sy = surfAspect / target
+        }
+        posBuf.position(0)
+        posBuf.put(floatArrayOf(
+            -sx,  sy,
+            -sx, -sy,
+             sx,  sy,
+             sx, -sy,
+        ))
+        posBuf.rewind()
+        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, posVboId)
+        GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, posBuf.capacity() * 4, posBuf)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
 
         quadDirty = false
@@ -155,10 +195,10 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         GLES30.glGenBuffers(2, vbos, 0)
         posVboId = vbos[0]; uvVboId = vbos[1]
 
-        // Position VBO — static, never changes.
+        // Position VBO — updated when the view size or aspect mode changes.
         posBuf.rewind()
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, posVboId)
-        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, posBuf.capacity() * 4, posBuf, GLES30.GL_STATIC_DRAW)
+        GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, posBuf.capacity() * 4, posBuf, GLES30.GL_DYNAMIC_DRAW)
         GLES30.glVertexAttribPointer(0, 2, GLES30.GL_FLOAT, false, 0, 0)
         GLES30.glEnableVertexAttribArray(0)
 
@@ -323,6 +363,12 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         // Must match BEEBEM_BITMAP_HEIGHT in BeebWin.h (currently 512).
         // The GL texture is always this tall regardless of the active scanline count.
         private const val MAX_VIDEO_HEIGHT = 512
+
+        // Width/height of one bitmap pixel on a 4:3 PAL screen: a 16 MHz pixel
+        // (62.5 ns) of the 52 µs visible line, against one of 576 visible
+        // lines (BeebEm draws each scanline twice). (4/3) * 576 / 832 = 12/13.
+        // Gives ~1.15:1 for the standard 640 x 512 active area.
+        private const val BBC_PIXEL_ASPECT = 12f / 13f
 
         private val PROBE_BUF: ByteBuffer =
             ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder())
