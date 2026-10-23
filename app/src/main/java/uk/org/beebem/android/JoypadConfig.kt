@@ -29,6 +29,17 @@ data class JoypadMapping(
     val fire2: JoypadKey,
     val fire3: JoypadKey,
     val layout: JoypadLayout = JoypadLayout(),
+    // BBC keys for physical controller buttons that have no on-screen
+    // counterpart (see PHYSICAL_EXTRA_IDS). Unassigned buttons do nothing.
+    val extras: Map<String, JoypadKey> = DefaultExtras,
+)
+
+// Physical-controller-only buttons, assignable per disc in CFG mode by
+// pressing the button. Select is reserved: Select+Start sends SHIFT+BREAK.
+val PHYSICAL_EXTRA_IDS = listOf("y", "l1", "r1", "l2", "r2", "l3", "r3", "start")
+
+val DefaultExtras: Map<String, JoypadKey> = mapOf(
+    "start" to JoypadKey(4, 9, "RET"),
 )
 
 // The seven on-screen joypad buttons. Order is purely for iteration —
@@ -173,6 +184,9 @@ object JoypadConfigManager {
         put("fire2", keyToJson(m.fire2))
         put("fire3", keyToJson(m.fire3))
         if (m.layout.positions.isNotEmpty()) put("layout", layoutToJson(m.layout))
+        put("extras", JSONObject().apply {
+            m.extras.forEach { (id, k) -> put(id, keyToJson(k)) }
+        })
     }
 
     private fun keyToJson(k: JoypadKey) = JSONObject().apply {
@@ -200,7 +214,16 @@ object JoypadConfigManager {
         fire2 = jsonToKey(obj.getJSONObject("fire2")),
         fire3 = jsonToKey(obj.getJSONObject("fire3")),
         layout = obj.optJSONObject("layout")?.let { jsonToLayout(it) } ?: JoypadLayout(),
+        extras = obj.optJSONObject("extras")?.let { jsonToExtras(it) } ?: DefaultExtras,
     )
+
+    private fun jsonToExtras(obj: JSONObject): Map<String, JoypadKey> {
+        val extras = mutableMapOf<String, JoypadKey>()
+        obj.keys().forEach { id ->
+            obj.optJSONObject(id)?.let { extras[id] = jsonToKey(it) }
+        }
+        return extras
+    }
 
     private fun jsonToLayout(obj: JSONObject): JoypadLayout {
         // Accepts the current shape (x/y dp), and best-effort migrates two prior
