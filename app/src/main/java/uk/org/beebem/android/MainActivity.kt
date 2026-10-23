@@ -14,8 +14,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -130,6 +137,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// Toolbar auto-hide delay, and the height of the touch strip at the top of the
+// screen that shows it again.
+private const val TOOLBAR_HIDE_MS = 3000L
+private val TOOLBAR_TOUCH_STRIP = 56.dp
+
 @Composable
 private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
     val context = LocalContext.current
@@ -214,19 +226,66 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
         }
     }
 
+    // The toolbar floats over the top of the picture and hides itself after
+    // TOOLBAR_HIDE_MS without a touch; touching the top of the screen brings it
+    // back. It stays up while its menu is open.
+    var toolbarVisible by remember { mutableStateOf(true) }
+    var toolbarTouches by remember { mutableIntStateOf(0) }
+    fun pokeToolbar() { toolbarVisible = true; toolbarTouches++ }
+    LaunchedEffect(toolbarVisible, toolbarTouches, showMenu) {
+        if (toolbarVisible && !showMenu) {
+            delay(TOOLBAR_HIDE_MS)
+            toolbarVisible = false
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .systemBarsPadding()
         ) {
+          // Video — takes all remaining vertical space, with the toolbar on top.
+          Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            AndroidView(
+                factory  = { view },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            // Touch strip along the top edge that brings the hidden toolbar back.
+            if (!toolbarVisible) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(TOOLBAR_TOUCH_STRIP)
+                        .pointerInput(Unit) { detectTapGestures { pokeToolbar() } },
+                )
+            }
+
+            AnimatedVisibility(
+                visible  = toolbarVisible,
+                enter    = slideInVertically { -it } + fadeIn(),
+                exit     = slideOutVertically { -it } + fadeOut(),
+                modifier = Modifier.align(Alignment.TopCenter),
+            ) {
             // Compact toolbar — always fits in portrait.
             // Disc operations are in the ⋮ overflow menu.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(30.dp)
-                    .background(Color(0xFF111122)),
+                    .background(Color(0xE6111122))
+                    // Any touch on the toolbar restarts the hide timer
+                    // (observed without consuming, so buttons still work).
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitPointerEvent(PointerEventPass.Initial)
+                                pokeToolbar()
+                            }
+                        }
+                    },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ToolbarButton(
@@ -252,12 +311,8 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                     inputMode = if (inputMode == InputMode.JOYPAD) InputMode.NONE else InputMode.JOYPAD
                 }
             }
-
-            // Video — takes all remaining vertical space.
-            AndroidView(
-                factory  = { view },
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-            )
+            }
+          }
 
             AnimatedVisibility(visible = inputMode == InputMode.KEYBOARD) {
                 BbcKeyboard(
