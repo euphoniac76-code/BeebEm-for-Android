@@ -22,6 +22,16 @@ jobs:
           yes | "$SDKM" --licenses > /dev/null || true
           "$SDKM" --install "cmake;4.1.2"
 
+      # The C++ sources were written on case-insensitive file systems (macOS/Windows) and include
+      # some headers with a different capitalisation from the real file. Linux needs exact names.
+      - name: Add lower/upper-case header aliases
+        working-directory: app/src/main/cpp
+        run: |
+          ln -sf Windows.h platform/windows.h
+          ln -sf Sdl.h platform/SDL.h
+          ln -sf Log.h core/log.h
+          ln -sf Line.h core/line.h
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
