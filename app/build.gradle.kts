@@ -30,6 +30,19 @@ android {
         jniLibs { useLegacyPackaging = false }
     }
 
+    // Fixed debug signing key, kept in the repository, so that every CI build is
+    // signed the same way and a new APK installs over the previous one (keeping
+    // the app's saved settings). It only identifies these test builds and is not
+    // a secret; a Play Store release would need its own private key.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("beebem-debug.keystore")
+            storePassword = "android"
+            keyAlias = "beebem"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
