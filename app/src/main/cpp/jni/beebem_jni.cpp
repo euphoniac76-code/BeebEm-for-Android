@@ -318,6 +318,17 @@ Java_uk_org_beebem_android_BeebEmNative_nativeRunFrame(
     return newFrame;
 }
 
+// Displayed rows of the frame most recently returned by nativeRunFrame:
+// out[0] = first row, out[1] = last row (inclusive), out[2] = rows per TV scanline.
+JNIEXPORT void JNICALL
+Java_uk_org_beebem_android_BeebEmNative_nativeGetDisplayRows(
+        JNIEnv *env, jobject /*obj*/, jintArray out) {
+    int first, last, rows;
+    GetCapturedDisplayRows(&first, &last, &rows);
+    jint v[3] = { first, last, rows };
+    env->SetIntArrayRegion(out, 0, 3, v);
+}
+
 JNIEXPORT jlong JNICALL
 Java_uk_org_beebem_android_BeebEmNative_nativeGetCycleCount(
         JNIEnv * /*env*/, jobject /*obj*/) {
