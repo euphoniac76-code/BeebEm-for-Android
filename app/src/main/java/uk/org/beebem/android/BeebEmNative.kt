@@ -14,6 +14,9 @@ object BeebEmNative {
     // Returns false if the BBC hasn't completed a new VSYNC since the last call;
     // caller should re-render the existing GL texture without uploading.
     external fun nativeRunFrame(frameBuffer: ByteBuffer, widthOut: IntArray, heightOut: IntArray, activeWidthOut: IntArray): Boolean
+    // Displayed (non-border) rows of the frame last returned by nativeRunFrame:
+    // out[0] = first row, out[1] = last row (inclusive), out[2] = rows per TV scanline.
+    external fun nativeGetDisplayRows(out: IntArray)
     external fun nativeGetCycleCount(): Long
 
     external fun nativeKeyDown(beebRow: Int, beebCol: Int)

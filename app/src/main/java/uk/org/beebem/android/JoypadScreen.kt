@@ -421,110 +421,118 @@ private fun CfgToggle(
 
 // ── Key picker dialog ──────────────────────────────────────────────────────
 
+// Shifted legend for each BBC key (from the shifted-symbol entries), so the
+// picker can show both symbols on a key the way the real keycaps do.
+private val SHIFTED_LEGEND: Map<Pair<Int, Int>, String> =
+    PICKER_KEY_ROWS.flatten().filter { it.shifted }.associate { (it.row to it.col) to it.label }
+
+// Picker rows: the keyboard rows, then the SHIFT+key choices split over two
+// rows so that no row is wider than the main keyboard.
+private val PICKER_ROWS: List<List<JoypadKey>> = run {
+    val unshifted = PICKER_KEY_ROWS.map { row -> row.filter { !it.shifted } }.filter { it.isNotEmpty() }
+    val shifted   = PICKER_KEY_ROWS.flatten().filter { it.shifted }
+    val half      = (shifted.size + 1) / 2
+    unshifted + listOf(shifted.take(half), shifted.drop(half)).filter { it.isNotEmpty() }
+}
+
+// Full-screen key picker. Keys share out the whole width of each row and the
+// rows share the whole height, so keys are as large as the screen allows.
 @Composable
 private fun KeyPickerDialog(
     buttonLabel: String,
     onKeyPicked: (JoypadKey) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var zoom by remember { mutableStateOf(1f) }
-    val keyW    = (22.dp  * zoom)
-    val rowH    = (28.dp  * zoom)
-    val keyGap  = (2.dp   * zoom).coerceAtLeast(1.dp)
-    val rowGap  = (3.dp   * zoom).coerceAtLeast(2.dp)
-    val keyFont = (7f     * zoom).sp
-
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.92f)
-                .padding(horizontal = 12.dp)
-                .background(Color(0xFF1A1A2E), RoundedCornerShape(12.dp))
-                .padding(12.dp),
+                .fillMaxSize()
+                .background(Color(0xFF1A1A2E))
+                .padding(horizontal = 8.dp, vertical = 6.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(36.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     "Map: $buttonLabel",
                     color = Color.White,
-                    fontSize = 13.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f),
                 )
-                TextButton(
-                    onClick = { zoom = (zoom - 0.25f).coerceAtLeast(0.75f) },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) {
-                    Text("−", color = Color(0xFF8888AA), fontSize = 14.sp)
-                }
-                Text(
-                    "${(zoom * 100).toInt()}%",
-                    color = Color(0xFF666688),
-                    fontSize = 9.sp,
-                    modifier = Modifier.width(32.dp),
-                    textAlign = TextAlign.Center,
-                )
-                TextButton(
-                    onClick = { zoom = (zoom + 0.25f).coerceAtMost(2.5f) },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) {
-                    Text("+", color = Color(0xFF8888AA), fontSize = 14.sp)
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = Color(0xFF8888AA), fontSize = 14.sp)
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                val rowGap = 4.dp
+                val keyGap = 4.dp
+                val rowH   = (maxHeight - rowGap * (PICKER_ROWS.size - 1)) / PICKER_ROWS.size
+                val widest = PICKER_ROWS.maxOf { it.size }
+                val stdW   = (maxWidth - keyGap * (widest - 1)) / widest
+                val density = LocalDensity.current
+                // Main legend and (smaller) shifted legend, sized from the key.
+                val mainFont  = with(density) { minOf(rowH * 0.36f, stdW * 0.34f).toSp() }
+                val smallFont = with(density) { minOf(rowH * 0.26f, stdW * 0.26f).toSp() }
 
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .horizontalScroll(rememberScrollState())
-                    .verticalScroll(rememberScrollState()),
-            ) {
                 Column(verticalArrangement = Arrangement.spacedBy(rowGap)) {
-                    PICKER_KEY_ROWS.forEach { row ->
+                    PICKER_ROWS.forEach { row ->
                         Row(
-                            modifier = Modifier.height(rowH),
+                            modifier = Modifier.fillMaxWidth().height(rowH),
                             horizontalArrangement = Arrangement.spacedBy(keyGap),
                         ) {
                             row.forEach { key ->
+                                // SHIFT+key choices are labelled "SHIFT" above the
+                                // symbol; plain keys show their shifted symbol there.
+                                val upper = if (key.shifted) "SHIFT" else SHIFTED_LEGEND[key.row to key.col]
                                 Box(
                                     modifier = Modifier
-                                        .width(keyW)
+                                        .weight(1f)
                                         .fillMaxHeight()
                                         .background(
                                             if (key.shifted) Color(0xFF1A2A5E) else Color(0xFF2A2A5E),
-                                            RoundedCornerShape(3.dp),
+                                            RoundedCornerShape(5.dp),
                                         )
                                         .border(
-                                            0.5.dp,
+                                            1.dp,
                                             if (key.shifted) Color(0xFF334488) else Color(0xFF444477),
-                                            RoundedCornerShape(3.dp),
+                                            RoundedCornerShape(5.dp),
                                         )
                                         .pointerInput(key) {
                                             detectTapGestures { onKeyPicked(key) }
                                         },
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Text(
-                                        text = key.label,
-                                        color = if (key.shifted) Color(0xFFBBBBDD) else Color.White,
-                                        fontSize = keyFont,
-                                        textAlign = TextAlign.Center,
-                                        maxLines = 1,
-                                    )
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        if (upper != null) {
+                                            Text(
+                                                text = upper,
+                                                color = Color(0xFF9999CC),
+                                                fontSize = smallFont,
+                                                lineHeight = smallFont,
+                                                maxLines = 1,
+                                            )
+                                        }
+                                        Text(
+                                            text = key.label,
+                                            color = if (key.shifted) Color(0xFFDDDDFF) else Color.White,
+                                            fontSize = mainFont,
+                                            lineHeight = mainFont,
+                                            fontWeight = FontWeight.Bold,
+                                            textAlign = TextAlign.Center,
+                                            maxLines = 1,
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-
-            Spacer(Modifier.height(6.dp))
-            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) {
-                Text("Cancel", color = Color(0xFF8888AA), fontSize = 11.sp)
             }
         }
     }

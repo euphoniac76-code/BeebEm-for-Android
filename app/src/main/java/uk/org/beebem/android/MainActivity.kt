@@ -173,8 +173,11 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
         val discName = disc0LocalFile?.name
         if (discName != null) joypadDiscMappings[discName] = newMapping
         else                  joypadDefault = newMapping
+        // Snapshot the maps on the main thread; the write happens on IO.
+        val defaultSnapshot = joypadDefault
+        val discSnapshot    = joypadDiscMappings.toMap()
         scope.launch(Dispatchers.IO) {
-            JoypadConfigManager.save(context, joypadDefault, joypadDiscMappings)
+            JoypadConfigManager.save(context, defaultSnapshot, discSnapshot)
         }
     }
 

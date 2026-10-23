@@ -75,6 +75,20 @@ private class BeebRenderer : GLSurfaceView.Renderer {
     private var activeW   = 0
     private var texReady  = false
 
+    // Displayed (non-border) rows of the picture, so the black border above and
+    // below the area the CRTC displays is cropped off and the picture fills the
+    // view height. The extent is the union over the last DISPLAY_WINDOW frames:
+    // split-mode games (e.g. Elite) alternate between two extents every frame,
+    // and the union keeps the picture steady. It grows at once and shrinks
+    // about a second after the displayed area gets smaller.
+    private val rowsOut      = IntArray(3)
+    private val recentFirst  = IntArray(DISPLAY_WINDOW) { 0 }
+    private val recentLast   = IntArray(DISPLAY_WINDOW) { MAX_VIDEO_HEIGHT - 1 }
+    private var recentIndex  = 0
+    private var dispFirst    = 0
+    private var dispLast     = MAX_VIDEO_HEIGHT - 1
+    private var rowsPerLine  = 1
+
     private var surfWidth  = 0
     private var surfHeight = 0
 
@@ -124,14 +138,16 @@ private class BeebRenderer : GLSurfaceView.Renderer {
     private fun recomputeQuad() {
         if (texWidth == 0 || texHeight == 0 || activeW == 0 || activeH == 0) return
 
-        // UV: only the active content region — rows/columns beyond are black padding.
+        // UV: only the active content region — the displayed rows (border rows
+        // above and below are cropped) and the active columns.
         val uvRight  = activeW.toFloat() / texWidth.toFloat()
-        val uvBottom = activeH.toFloat() / texHeight.toFloat()
+        val uvTop    = dispFirst.toFloat() / texHeight.toFloat()
+        val uvBottom = (dispLast + 1).toFloat() / texHeight.toFloat()
         uvBuf.position(0)
         uvBuf.put(floatArrayOf(
-            0f,      0f,
+            0f,      uvTop,
             0f,      uvBottom,
-            uvRight, 0f,
+            uvRight, uvTop,
             uvRight, uvBottom,
         ))
         uvBuf.rewind()
@@ -141,11 +157,11 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, uvBuf.capacity() * 4, uvBuf)
 
         // Position: shrink the quad on one axis so the picture keeps its aspect.
-        // The BBC aspect uses the active width only — the active height
-        // oscillates in split-mode games (e.g. Elite), which would make the
-        // picture wobble, so it is referenced to the full 512-row frame.
+        // The BBC aspect is the active width against the displayed height in
+        // TV lines (each scanline counted twice, matching BBC_PIXEL_ASPECT).
+        val displayedLines = (dispLast - dispFirst + 1).toFloat() / rowsPerLine
         val target = when (aspectMode) {
-            AspectMode.BBC     -> activeW * BBC_PIXEL_ASPECT / MAX_VIDEO_HEIGHT
+            AspectMode.BBC     -> activeW * BBC_PIXEL_ASPECT / (displayedLines * 2f)
             AspectMode.FOUR_3  -> 4f / 3f
             AspectMode.STRETCH -> 0f
         }
@@ -303,6 +319,7 @@ private class BeebRenderer : GLSurfaceView.Renderer {
                     activeW   = newW
                     quadDirty = true
                 }
+                updateDisplayedRows()
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texId)
                 buf.rewind()
                 GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, 0, 0,
@@ -327,6 +344,26 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         GLES30.glBindVertexArray(vaoId)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
         GLES30.glBindVertexArray(0)
+    }
+
+    // Record this frame's displayed rows and recompute the union over the window.
+    private fun updateDisplayedRows() {
+        BeebEmNative.nativeGetDisplayRows(rowsOut)
+        val first = rowsOut[0].coerceIn(0, MAX_VIDEO_HEIGHT - 1)
+        val last  = rowsOut[1].coerceIn(first, MAX_VIDEO_HEIGHT - 1)
+        recentFirst[recentIndex] = first
+        recentLast[recentIndex]  = last
+        recentIndex = (recentIndex + 1) % DISPLAY_WINDOW
+
+        val newFirst = recentFirst.min()
+        val newLast  = recentLast.max()
+        val newRows  = rowsOut[2].coerceAtLeast(1)
+        if (newFirst != dispFirst || newLast != dispLast || newRows != rowsPerLine) {
+            dispFirst   = newFirst
+            dispLast    = newLast
+            rowsPerLine = newRows
+            quadDirty   = true
+        }
     }
 
     private fun buildProgram(vertSrc: String, fragSrc: String): Int {
@@ -369,6 +406,9 @@ private class BeebRenderer : GLSurfaceView.Renderer {
         // lines (BeebEm draws each scanline twice). (4/3) * 576 / 832 = 12/13.
         // Gives ~1.15:1 for the standard 640 x 512 active area.
         private const val BBC_PIXEL_ASPECT = 12f / 13f
+
+        // Frames over which the displayed-row extent is combined (~1 s at 50 Hz).
+        private const val DISPLAY_WINDOW = 50
 
         private val PROBE_BUF: ByteBuffer =
             ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder())

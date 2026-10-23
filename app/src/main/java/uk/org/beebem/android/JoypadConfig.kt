@@ -135,7 +135,7 @@ val PICKER_KEY_ROWS: List<List<JoypadKey>> = listOf(
         JoypadKey(1, 3, "%",  shifted = true), JoypadKey(3, 4, "&",  shifted = true),
         JoypadKey(2, 4, "'",  shifted = true), JoypadKey(1, 5, "(",  shifted = true),
         JoypadKey(2, 6, ")",  shifted = true), JoypadKey(1, 7, "=",  shifted = true),
-        JoypadKey(1, 8, "÷",  shifted = true), JoypadKey(2, 8, "£",  shifted = true),
+        JoypadKey(1, 8, "~",  shifted = true), JoypadKey(2, 8, "£",  shifted = true),
         JoypadKey(6, 8, "?",  shifted = true), JoypadKey(5, 7, "+",  shifted = true),
         JoypadKey(4, 8, "*",  shifted = true), JoypadKey(6, 6, "<",  shifted = true),
         JoypadKey(6, 7, ">",  shifted = true), JoypadKey(3, 8, "{",  shifted = true),
