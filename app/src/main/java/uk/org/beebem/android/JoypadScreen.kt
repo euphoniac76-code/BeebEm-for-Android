@@ -20,6 +20,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -70,6 +71,10 @@ private fun displayName(id: String) = when (id) {
     "up"    -> "Up";    "down"  -> "Down"
     "left"  -> "Left";  "right" -> "Right"
     "fire1" -> "Fire A"; "fire2" -> "Fire B"; "fire3" -> "Fire C"
+    "y"     -> "Y button"
+    "l1"    -> "L1"; "r1" -> "R1"; "l2" -> "L2"; "r2" -> "R2"
+    "l3"    -> "L3 (left stick click)"; "r3" -> "R3 (right stick click)"
+    "start" -> "Start"
     else    -> id
 }
 
@@ -84,7 +89,7 @@ private fun mappingWithKey(m: JoypadMapping, id: String, k: JoypadKey): JoypadMa
     "up"    -> m.copy(up    = k);  "down"  -> m.copy(down  = k)
     "left"  -> m.copy(left  = k);  "right" -> m.copy(right = k)
     "fire1" -> m.copy(fire1 = k);  "fire2" -> m.copy(fire2 = k); "fire3" -> m.copy(fire3 = k)
-    else    -> m
+    else    -> m.copy(extras = m.extras + (id to k))   // physical-only controller button
 }
 
 // Standard AABB intersection — touching edges (==) is NOT considered overlap,
@@ -116,6 +121,14 @@ fun JoypadScreen(
     val latestConfiguring by rememberUpdatedState(configuring)
     DisposableEffect(Unit) {
         onDispose { if (latestConfiguring) latestCallback(false) }
+    }
+
+    // In CFG mode, pressing a physical controller button opens the key picker
+    // for that button — including buttons with no on-screen counterpart.
+    val gamepad = (LocalContext.current as? MainActivity)?.gamepad
+    DisposableEffect(configuring, gamepad) {
+        if (configuring && gamepad != null) gamepad.configListener = { id -> pickingFor = id }
+        onDispose { gamepad?.configListener = null }
     }
 
     pickingFor?.let { buttonId ->
