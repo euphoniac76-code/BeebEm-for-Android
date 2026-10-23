@@ -4,8 +4,12 @@ import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,10 +45,22 @@ class MainActivity : ComponentActivity() {
     // dispatchKeyEvent defers to Compose while this is true so typing works normally.
     internal var textInputActive = false
 
+    // Physical controller → BBC keys, using the current per-disc joypad mapping.
+    internal val gamepad = GamepadInput()
+
+    // True while a full-screen overlay (menu, game picker, search, snapshots)
+    // is showing; controller input is then left to Android as normal.
+    internal var overlayActive = false
+        set(value) {
+            if (value && !field) gamepad.releaseAll()
+            field = value
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        hideSystemBars()
 
         val ok = BeebEmNative.nativeInit(assets, filesDir.absolutePath)
         Log.i("BeebEm-For-Android", "nativeInit returned $ok")
@@ -60,6 +76,8 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (textInputActive) return super.dispatchKeyEvent(event)
+
+        if (!overlayActive && gamepad.isGamepadEvent(event) && gamepad.onKeyEvent(event)) return true
 
         val bbc = HARDWARE_KEY_MAP[event.keyCode] ?: return super.dispatchKeyEvent(event)
 
@@ -80,13 +98,29 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (!textInputActive && !overlayActive && gamepad.onMotionEvent(event)) return true
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    // Full-screen: hide the status and navigation bars; a swipe from the
+    // edge shows them temporarily.
+    private fun hideSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        hideSystemBars()
         glView?.resumeEmulation()
     }
 
     override fun onPause() {
         super.onPause()
+        gamepad.releaseAll()
         glView?.pauseEmulation()
     }
 
@@ -99,12 +133,26 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
     val context = LocalContext.current
+    val activity = context as? MainActivity
     val view = remember { BeebGLSurfaceView(context).also { onViewCreated(it) } }
     val scope = rememberCoroutineScope()
 
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-    var inputMode by remember { mutableStateOf(if (isLandscape) InputMode.KEYBOARD else InputMode.NONE) }
+    // With a game controller connected, start with the picture full height
+    // rather than sharing the screen with the on-screen keyboard.
+    var inputMode by remember {
+        mutableStateOf(if (isLandscape && !hasGameController()) InputMode.KEYBOARD else InputMode.NONE)
+    }
+
+    val prefs = remember { context.getSharedPreferences("display", android.content.Context.MODE_PRIVATE) }
+    var aspectMode by remember {
+        mutableStateOf(
+            runCatching { AspectMode.valueOf(prefs.getString("aspect", null) ?: "") }
+                .getOrDefault(AspectMode.BBC)
+        )
+    }
+    LaunchedEffect(aspectMode) { view.setAspectMode(aspectMode) }
 
     var disc0LocalFile by remember { mutableStateOf<File?>(null) }
     val disc0Name = disc0LocalFile?.name
@@ -128,6 +176,12 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
         scope.launch(Dispatchers.IO) {
             JoypadConfigManager.save(context, joypadDefault, joypadDiscMappings)
         }
+    }
+
+    val overlayVisible = showMenu || showGamePicker || showSearch || showStatePicker
+    SideEffect {
+        activity?.gamepad?.mapping = currentJoypadMapping
+        activity?.overlayActive = overlayVisible
     }
 
     val pickDisc = rememberLauncherForActivityResult(
@@ -267,6 +321,13 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                             disc0LocalFile = null
                             currentJoypadMapping = joypadDefault
                         }
+                    }
+                    HorizontalDivider(color = Color(0xFF1E1E30))
+                    // Cycles BBC → 4:3 → Stretch; the menu stays open so the
+                    // change can be seen behind it.
+                    MenuButton("Aspect: ${aspectMode.label}") {
+                        aspectMode = aspectMode.next()
+                        prefs.edit().putString("aspect", aspectMode.name).apply()
                     }
                     HorizontalDivider(color = Color(0xFF1E1E30))
                     MenuButton("Save Snapshot") {
