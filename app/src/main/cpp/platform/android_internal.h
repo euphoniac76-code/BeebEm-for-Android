@@ -19,6 +19,8 @@ bool GetVideoBufferRGBA(uint8_t *dst);
 int GetVideoWidth();
 int GetVideoHeight();      // height of the last captured complete frame
 int GetVideoActiveWidth(); // active pixel columns of the last captured frame
+// Displayed (non-border) pixmap rows of the last captured frame, and pixmap rows per TV scanline.
+void GetCapturedDisplayRows(int *first, int *last, int *rowsPerScanLine);
 
 // Sound ring buffer consumer — called from AAudio data callback.
 int GetBytesFromSDLSoundBuffer(int len, unsigned char *dst);

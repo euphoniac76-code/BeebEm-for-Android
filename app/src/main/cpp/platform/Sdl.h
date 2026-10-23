@@ -53,6 +53,7 @@ extern int  cfg_VerticalOffset;
 // Returns the number of pixel rows rendered by the CRTC in the last BBC frame.
 // Defined in core/Video.cpp; used here to clip the GL texture to the active area.
 int GetVideoRenderedHeight();
+void GetVideoDisplayedRows(int *first, int *last, int *rowsPerScanLine);
 
 // Platform functions provided by android_platform.cpp.
 unsigned char *GetSDLScreenLinePtr(int line);

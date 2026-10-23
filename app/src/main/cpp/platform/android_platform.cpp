@@ -51,6 +51,9 @@ static uint32_t s_paletteBGRA[256];
 static uint8_t s_capturedFrame[BEEBEM_VIDEO_CORE_SCREEN_WIDTH * BEEBEM_BITMAP_HEIGHT];
 static int     s_capturedH    = 0;
 static int     s_capturedW    = 0;
+static int     s_capturedFirst = 0;                         // first displayed pixmap row
+static int     s_capturedLast  = BEEBEM_BITMAP_HEIGHT - 1;  // last displayed pixmap row
+static int     s_capturedRowsPerLine = 1;
 static bool    s_frameReady   = false;
 
 // Public alias so BeebWin.cpp's __APPLE__ bitmap branch can use it.
@@ -233,6 +236,7 @@ static void expand_pixels(const uint8_t * __restrict__ src,
 void CaptureFrame() {
     s_capturedH   = GetVideoRenderedHeight();
     s_capturedW   = (int)ActualScreenWidth;
+    GetVideoDisplayedRows(&s_capturedFirst, &s_capturedLast, &s_capturedRowsPerLine);
     memcpy(s_capturedFrame, s_videoBuffer,
            BEEBEM_VIDEO_CORE_SCREEN_WIDTH * BEEBEM_BITMAP_HEIGHT);
     s_frameReady  = true;
@@ -257,3 +261,10 @@ int GetVideoWidth()       { return BEEBEM_VIDEO_CORE_SCREEN_WIDTH; }
 // gets consistent dimensions even if the BBC is already mid-next-frame.
 int GetVideoHeight()      { return s_frameReady ? s_capturedH : GetVideoRenderedHeight(); }
 int GetVideoActiveWidth() { return s_frameReady ? s_capturedW : (int)ActualScreenWidth; }
+
+// Displayed rows of the last captured frame (see GetVideoDisplayedRows in Video.cpp).
+void GetCapturedDisplayRows(int *first, int *last, int *rowsPerScanLine) {
+    *first           = s_capturedFirst;
+    *last            = s_capturedLast;
+    *rowsPerScanLine = s_capturedRowsPerLine;
+}
