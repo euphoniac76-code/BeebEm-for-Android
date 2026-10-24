@@ -22,6 +22,8 @@ object BeebEmNative {
     external fun nativeKeyDown(beebRow: Int, beebCol: Int)
     external fun nativeKeyUp(beebRow: Int, beebCol: Int)
     external fun nativeBreakKey(shift: Boolean)
+    // BBC analogue joystick 1: x/y 0..65535 (65535 = left/up, 32768 = centre).
+    external fun nativeSetJoystick(x: Int, y: Int)
 
     external fun nativeMountDisc(drive: Int, path: String, writeProtect: Boolean): Boolean
     external fun nativeEjectDisc(drive: Int)

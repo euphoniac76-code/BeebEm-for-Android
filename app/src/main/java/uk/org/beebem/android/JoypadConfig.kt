@@ -32,7 +32,13 @@ data class JoypadMapping(
     // BBC keys for physical controller buttons that have no on-screen
     // counterpart (see PHYSICAL_EXTRA_IDS). Unassigned buttons do nothing.
     val extras: Map<String, JoypadKey> = DefaultExtras,
+    // The controller's left stick drives the BBC analogue joystick instead of
+    // sending direction keys (for games with real analogue control, e.g. Revs).
+    val analogueStick: Boolean = false,
 )
+
+/** The BBC analogue joystick's fire button, as a "key" (row -1, see nativeKeyDown). */
+val JOYSTICK_FIRE = JoypadKey(-1, 0, "JOY FIRE")
 
 // Physical-controller-only buttons, assignable per disc in CFG mode by
 // pressing the button. Select is reserved: Select+Start sends SHIFT+BREAK.
@@ -194,6 +200,7 @@ object JoypadConfigManager {
         put("fire2", keyToJson(m.fire2))
         put("fire3", keyToJson(m.fire3))
         if (m.layout.positions.isNotEmpty()) put("layout", layoutToJson(m.layout))
+        if (m.analogueStick) put("analogueStick", true)
         put("extras", JSONObject().apply {
             m.extras.forEach { (id, k) -> put(id, keyToJson(k)) }
         })
@@ -230,6 +237,7 @@ object JoypadConfigManager {
             fire3 = fire3,
             layout = obj.optJSONObject("layout")?.let { jsonToLayout(it) } ?: JoypadLayout(),
             extras = migrateFaceButtons(extras, fire1, fire2, fire3),
+            analogueStick = obj.optBoolean("analogueStick", false),
         )
     }
 

@@ -102,10 +102,16 @@ class GamepadInput {
         // Left stick
         val sx = event.getAxisValue(MotionEvent.AXIS_X)
         val sy = event.getAxisValue(MotionEvent.AXIS_Y)
-        stickLeft  = hysteresis(stickLeft,  -sx, STICK_ON, STICK_OFF)
-        stickRight = hysteresis(stickRight,  sx, STICK_ON, STICK_OFF)
-        stickUp    = hysteresis(stickUp,    -sy, STICK_ON, STICK_OFF)
-        stickDown  = hysteresis(stickDown,   sy, STICK_ON, STICK_OFF)
+        if (mapping.analogueStick && configListener == null) {
+            // Drive the BBC analogue joystick: -1..1 -> 65535 (left/up) .. 0 (right/down).
+            BeebEmNative.nativeSetJoystick(((1f - sx) * 32767.5f).toInt(), ((1f - sy) * 32767.5f).toInt())
+            stickUp = false; stickDown = false; stickLeft = false; stickRight = false
+        } else {
+            stickLeft  = hysteresis(stickLeft,  -sx, STICK_ON, STICK_OFF)
+            stickRight = hysteresis(stickRight,  sx, STICK_ON, STICK_OFF)
+            stickUp    = hysteresis(stickUp,    -sy, STICK_ON, STICK_OFF)
+            stickDown  = hysteresis(stickDown,   sy, STICK_ON, STICK_OFF)
+        }
         setSource("left",  SRC_STICK, stickLeft)
         setSource("right", SRC_STICK, stickRight)
         setSource("up",    SRC_STICK, stickUp)
@@ -130,6 +136,7 @@ class GamepadInput {
         selectHeld = false
         stickUp = false; stickDown = false; stickLeft = false; stickRight = false
         l2Axis = false; r2Axis = false
+        BeebEmNative.nativeSetJoystick(32768, 32768)   // centre the BBC joystick
     }
 
     // ── Internals ─────────────────────────────────────────────────────────

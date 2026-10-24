@@ -153,6 +153,22 @@ private val KNOWN_GAMES: List<Pair<String, () -> JoypadMapping>> = listOf(
         controlMapping("A", "Z", "SPC", "SHF", south = k("RET"), east = k("SHF"), west = k("SPC"),
             north = k("TAB"), r2 = k("H"))
     },
+    // Revs (Geoff Crammond): keys L / + steer, S accelerate, A brake, Q / TAB
+    // gear up / down, SPACE stronger steering; SHIFT+f1 keyboard, SHIFT+f2
+    // joystick mode (The Micro User's guide to Revs). The left stick is a real
+    // analogue BBC joystick (steer; forward accelerates, back brakes; fire is
+    // the clutch for gear changes) once SHIFT+f2 selects joystick mode. The
+    // D-pad and triggers drive the keyboard controls.
+    "revs" to {
+        controlMapping(
+            up = "S", down = "A", left = "L", right = ";",
+            south = JOYSTICK_FIRE, east = k("SPC"), west = k("T"),
+            north = shiftedKey("f2", "JOY MODE"),
+            l1 = k("TAB"), r1 = k("Q"),                 // gear down / up
+            l2 = k("A"), r2 = k("S"),                   // brake / accelerate
+            l3 = shiftedKey("f1", "KEYS MODE"),
+        ).copy(analogueStick = true)
+    },
     // Chuckie Egg: A up, Z down, < left, > right, SPACE jump.
     "chuckie" to { preset("azcomma") },
     // Stryker's Run / Codename Droid: Z X run, RETURN jump, ] fire blaster.
