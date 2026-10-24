@@ -314,7 +314,8 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                 )
             }
 
-            AnimatedVisibility(
+            // Fully qualified: inside this Box the ColumnScope overload would be picked.
+            androidx.compose.animation.AnimatedVisibility(
                 visible  = toolbarVisible,
                 enter    = slideInVertically { -it } + fadeIn(),
                 exit     = slideOutVertically { -it } + fadeOut(),
