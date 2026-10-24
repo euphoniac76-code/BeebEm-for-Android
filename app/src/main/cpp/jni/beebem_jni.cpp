@@ -22,6 +22,7 @@
 #include "FileType.h"
 #include "Sound.h"
 #include "SysVia.h"
+#include "AtoDConv.h"
 #include "UefState.h"
 
 #define LOG_TAG "BeebEm"
@@ -338,13 +339,26 @@ Java_uk_org_beebem_android_BeebEmNative_nativeGetCycleCount(
 JNIEXPORT void JNICALL
 Java_uk_org_beebem_android_BeebEmNative_nativeKeyDown(
         JNIEnv * /*env*/, jobject /*obj*/, jint beebRow, jint beebCol) {
+    // Row -1 is the analogue joystick's fire button (see JOYSTICK_FIRE in Kotlin).
+    if (beebRow < 0) { SysVIAButton[0] = true; return; }
     BeebKeyDown((int)beebRow, (int)beebCol);
 }
 
 JNIEXPORT void JNICALL
 Java_uk_org_beebem_android_BeebEmNative_nativeKeyUp(
         JNIEnv * /*env*/, jobject /*obj*/, jint beebRow, jint beebCol) {
+    if (beebRow < 0) { SysVIAButton[0] = false; return; }
     BeebKeyUp((int)beebRow, (int)beebCol);
+}
+
+// BBC analogue joystick 1 position, from a controller's analogue stick.
+// x and y are 0..65535: 65535 = left / up, 0 = right / down, 32768 = centre
+// (the A/D converter's convention, see AtoDConv.h).
+JNIEXPORT void JNICALL
+Java_uk_org_beebem_android_BeebEmNative_nativeSetJoystick(
+        JNIEnv * /*env*/, jobject /*obj*/, jint x, jint y) {
+    AtoDChannel[0] = x < 0 ? 0 : x > 65535 ? 65535 : (int)x;
+    AtoDChannel[1] = y < 0 ? 0 : y > 65535 ? 65535 : (int)y;
 }
 
 JNIEXPORT void JNICALL
