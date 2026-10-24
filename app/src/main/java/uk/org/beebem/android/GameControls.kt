@@ -123,7 +123,9 @@ val ELITE_MAPPING: JoypadMapping = controlMapping(
     l2 = k("J"),                                        // in-system jump
     r2 = k("H"),                                        // hyperspace
     start = k("f0"),                                    // front view / launch
-)
+// The left stick is Elite's analogue joystick (roll and pitch) once joystick
+// mode is chosen (COPY, K, DELETE - the overlay's STICK MODE button).
+).copy(analogueStick = true)
 
 // ── Known games ────────────────────────────────────────────────────────────
 //

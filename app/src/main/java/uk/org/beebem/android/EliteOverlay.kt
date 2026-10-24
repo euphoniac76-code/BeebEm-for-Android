@@ -20,6 +20,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.min
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ── Elite cockpit overlay ──────────────────────────────────────────────────
 //
@@ -36,6 +38,7 @@ private data class EliteKey(
     val keys: List<String>,     // BBC keys pressed together (picker labels), e.g. CTL + H
     val hint: String,           // the BBC key(s), as printed
     val docked: String? = null, // its meaning when docked, if different
+    val sequence: List<String>? = null,  // keys tapped one after another, instead of held
 )
 
 private data class EliteGroup(val title: String, val keys: List<EliteKey>, val columns: Int = 2)
@@ -59,6 +62,9 @@ private val LEFT_GROUPS = listOf(
         EliteKey("DOCK COMP", listOf("C"), "C"),
         EliteKey("DOCK OFF", listOf("P"), "P"),
         EliteKey("IN-SYS JUMP", listOf("J"), "J"),
+        // Elite switches between keyboard and joystick flight with K while
+        // paused (COPY to pause, DELETE to resume); this taps all three.
+        EliteKey("STICK MODE", emptyList(), "COPY K DEL", sequence = listOf("COPY", "K", "DEL")),
     )),
 )
 
@@ -152,6 +158,7 @@ private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp,
 @Composable
 private fun EliteButton(key: EliteKey, modifier: Modifier, onManual: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val shape = CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp)
     Box(
         modifier = modifier
@@ -167,7 +174,20 @@ private fun EliteButton(key: EliteKey, modifier: Modifier, onManual: () -> Unit)
                     val up = waitForUpOrCancellation()
                     bbc.asReversed().forEach { BeebEmNative.nativeKeyUp(it.row, it.col) }
                     pressed = false
-                    if (key.keys.isEmpty() && up != null) onManual()   // the MANUAL button
+                    if (key.keys.isEmpty() && up != null) {
+                        val seq = key.sequence
+                        if (seq == null) onManual()                     // the MANUAL button
+                        else scope.launch {
+                            // Tap each key long enough for the game to see it.
+                            for (label in seq) {
+                                val k = bbcKey(label)
+                                BeebEmNative.nativeKeyDown(k.row, k.col)
+                                delay(150)
+                                BeebEmNative.nativeKeyUp(k.row, k.col)
+                                delay(250)
+                            }
+                        }
+                    }
                 }
             },
         contentAlignment = Alignment.Center,
