@@ -87,6 +87,7 @@ private val RIGHT_GROUPS = listOf(
         EliteKey("PAUSE", listOf("COPY"), "COPY"),
         EliteKey("RESUME", listOf("DEL"), "DEL"),
         EliteKey("SAVE / LOAD", listOf("@"), "@"),
+        EliteKey("MANUAL", emptyList(), "ORIGINAL"),   // opens the flight training manual
     )),
 )
 
@@ -101,18 +102,18 @@ private val ELITE_FONT   = FontFamily.Monospace
 private const val ELITE_SCREEN_WIDTH = 256f / 320f
 
 @Composable
-fun EliteOverlay(pictureWidthFraction: Float, modifier: Modifier = Modifier) {
+fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier) {
         val side = maxWidth * ((1f - pictureWidthFraction * ELITE_SCREEN_WIDTH) / 2f) - 6.dp
         if (side < 96.dp) return@BoxWithConstraints     // no room beside the picture
         val panelWidth = min(side, 220.dp)
-        ElitePanel(LEFT_GROUPS, Modifier.align(Alignment.CenterStart).width(panelWidth).fillMaxHeight(), maxHeight)
-        ElitePanel(RIGHT_GROUPS, Modifier.align(Alignment.CenterEnd).width(panelWidth).fillMaxHeight(), maxHeight)
+        ElitePanel(LEFT_GROUPS, Modifier.align(Alignment.CenterStart).width(panelWidth).fillMaxHeight(), maxHeight, onManual)
+        ElitePanel(RIGHT_GROUPS, Modifier.align(Alignment.CenterEnd).width(panelWidth).fillMaxHeight(), maxHeight, onManual)
     }
 }
 
 @Composable
-private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp) {
+private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp, onManual: () -> Unit) {
     // Share the height between the button rows, after the group titles.
     val rows = groups.sumOf { (it.keys.size + it.columns - 1) / it.columns }
     val titleH = 17.dp
@@ -140,7 +141,7 @@ private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp)
                     modifier = Modifier.fillMaxWidth().height(rowH),
                     horizontalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    row.forEach { key -> EliteButton(key, Modifier.weight(1f).fillMaxHeight()) }
+                    row.forEach { key -> EliteButton(key, Modifier.weight(1f).fillMaxHeight(), onManual) }
                     repeat(group.columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
@@ -149,7 +150,7 @@ private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp)
 }
 
 @Composable
-private fun EliteButton(key: EliteKey, modifier: Modifier) {
+private fun EliteButton(key: EliteKey, modifier: Modifier, onManual: () -> Unit) {
     var pressed by remember { mutableStateOf(false) }
     val shape = CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp)
     Box(
@@ -163,9 +164,10 @@ private fun EliteButton(key: EliteKey, modifier: Modifier) {
                     pressed = true
                     val bbc = key.keys.map { bbcKey(it) }
                     bbc.forEach { BeebEmNative.nativeKeyDown(it.row, it.col) }
-                    waitForUpOrCancellation()
+                    val up = waitForUpOrCancellation()
                     bbc.asReversed().forEach { BeebEmNative.nativeKeyUp(it.row, it.col) }
                     pressed = false
+                    if (key.keys.isEmpty() && up != null) onManual()   // the MANUAL button
                 }
             },
         contentAlignment = Alignment.Center,

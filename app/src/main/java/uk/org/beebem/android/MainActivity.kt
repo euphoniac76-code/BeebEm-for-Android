@@ -175,6 +175,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
     var showStatePicker by remember { mutableStateOf(false) }
     var savedStates     by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
     var showControls    by remember { mutableStateOf(false) }
+    var showManual      by remember { mutableStateOf(false) }
 
     val joypadConfigPair = remember { JoypadConfigManager.load(context) }
     var joypadDefault by remember { mutableStateOf(joypadConfigPair.first) }
@@ -206,7 +207,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
         controlsSource = if (saved != null) "Custom" else "Default"
         eliteOffer = isEliteDisc(file) && !eliteOverlayOn
         scope.launch {
-            val detected = withContext(Dispatchers.IO) { detectGameMapping(file) }
+            val detected = withContext(Dispatchers.IO) { detectGameMapping(context, file) }
             if (disc0LocalFile != file) return@launch
             detectedMapping = detected
             if (saved == null && detected != null) {
@@ -230,7 +231,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
         }
     }
 
-    val overlayVisible = showMenu || showGamePicker || showSearch || showStatePicker || showControls
+    val overlayVisible = showMenu || showGamePicker || showSearch || showStatePicker || showControls || showManual
     SideEffect {
         activity?.gamepad?.mapping = currentJoypadMapping
         activity?.overlayActive = overlayVisible
@@ -287,7 +288,11 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
             )
 
             if (isElite && eliteOverlayOn) {
-                EliteOverlay(pictureWidthFraction = pictureFraction, modifier = Modifier.fillMaxSize())
+                EliteOverlay(
+                    pictureWidthFraction = pictureFraction,
+                    onManual = { showManual = true },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
 
             if (eliteOffer) {
@@ -519,6 +524,17 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                     },
                     onDismiss = { showSearch = false },
                 )
+            }
+        }
+
+        // Elite's original flight training manual, opened from the cockpit overlay.
+        if (showManual) {
+            DisposableEffect(Unit) {
+                view.softPause()
+                onDispose { view.softResume() }
+            }
+            Box(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+                EliteManualScreen(onDismiss = { showManual = false })
             }
         }
 

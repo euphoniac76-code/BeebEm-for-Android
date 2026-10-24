@@ -1,5 +1,7 @@
 package uk.org.beebem.android
 
+import android.content.Context
+import org.json.JSONObject
 import java.io.File
 
 // ── BBC keys by name ───────────────────────────────────────────────────────
@@ -192,15 +194,57 @@ fun isEliteDisc(file: File?): Boolean = file != null && "elite" in normalise(fil
 
 /**
  * The mapping to use for a disc that has no saved custom mapping: a known
- * game by file name, else controls read from the disc's own instructions,
- * else null (use the default).
+ * game by file name, else the checked list for Rob's collection, else
+ * controls read from the disc's own instructions, else null (the default).
  */
-fun detectGameMapping(file: File): Pair<JoypadMapping, String>? {
+fun detectGameMapping(context: Context, file: File): Pair<JoypadMapping, String>? {
     val name = normalise(file.name)
     KNOWN_GAMES.firstOrNull { (key, _) -> key in name }?.let { (key, build) ->
         return build() to "Known game ($key)"
     }
+    val checked = CheckedGameList.get(context)
+    if (checked.containsKey(name)) {
+        // null: the game is listed but has no reliable keys (e.g. it asks for them).
+        return checked[name]?.let { it to "Checked list" }
+    }
     return runCatching { DiscInstructions.read(file) }.getOrNull()?.let { it to "Read from the disc's instructions" }
+}
+
+// ── Checked list of games ──────────────────────────────────────────────────
+//
+// assets/game_controls.json: the controls of ~700 games in Rob's disc
+// collection, read from their instruction screens and checked by hand
+// (tools/build_db.js). Keyed by the normalised file name; each entry has
+// l/r/u/d direction keys, a = main action, b = second action, c = thrust,
+// as key-picker labels. A null entry means "no automatic keys".
+
+private object CheckedGameList {
+    @Volatile private var cache: Map<String, JoypadMapping?>? = null
+
+    fun get(context: Context): Map<String, JoypadMapping?> = cache ?: synchronized(this) {
+        cache ?: load(context).also { cache = it }
+    }
+
+    private fun load(context: Context): Map<String, JoypadMapping?> = runCatching {
+        val json = JSONObject(context.assets.open("game_controls.json").bufferedReader().use { it.readText() })
+        val out = HashMap<String, JoypadMapping?>(json.length())
+        for (name in json.keys()) {
+            val e = json.optJSONObject(name)
+            out[name] = e?.let { runCatching { toMapping(it) }.getOrNull() }
+        }
+        out
+    }.getOrDefault(emptyMap())
+
+    private fun toMapping(e: JSONObject): JoypadMapping {
+        fun s(k: String) = e.optString(k).takeIf { it.isNotEmpty() }
+        val action = s("a") ?: "RET"
+        return controlMapping(
+            up = s("u") ?: action, down = s("d") ?: "/", left = s("l")!!, right = s("r")!!,
+            south = bbcKeyOrAlias(action),
+            east = bbcKeyOrAlias(s("b") ?: "SPC"),
+            west = bbcKeyOrAlias(s("c") ?: "SHF"),
+        )
+    }
 }
 
 // ── Controls from a disc's instruction screen ──────────────────────────────
