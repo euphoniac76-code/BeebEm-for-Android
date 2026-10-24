@@ -161,11 +161,15 @@ class GamepadInput {
         held[id] = key
         if (key.shifted) matrixDown(0, 0)
         matrixDown(key.row, key.col)
+        // With the analogue stick on, the main fire button is also the joystick's
+        // fire button: games in joystick mode (Elite) stop reading the fire key.
+        if (id == "south" && mapping.analogueStick) matrixDown(JOYSTICK_FIRE.row, JOYSTICK_FIRE.col)
     }
 
     private fun release(id: String) {
         if (id == "select") { selectHeld = false; return }
         val key = held.remove(id) ?: return
+        if (id == "south" && mapping.analogueStick) matrixUp(JOYSTICK_FIRE.row, JOYSTICK_FIRE.col)
         matrixUp(key.row, key.col)
         if (key.shifted) matrixUp(0, 0)
     }
