@@ -21,7 +21,11 @@ enum class AspectMode(val label: String) {
 
 class BeebGLSurfaceView(context: Context) : GLSurfaceView(context) {
 
-    private val renderer = BeebRenderer()
+    // Called on the UI thread with the fraction of the view's width the
+    // picture takes up (after letterboxing), e.g. for overlays beside it.
+    var onPictureWidthFraction: ((Float) -> Unit)? = null
+
+    private val renderer = BeebRenderer { fraction -> post { onPictureWidthFraction?.invoke(fraction) } }
 
     init {
         setEGLContextClientVersion(3)
@@ -47,7 +51,10 @@ class BeebGLSurfaceView(context: Context) : GLSurfaceView(context) {
     }
 }
 
-private class BeebRenderer : GLSurfaceView.Renderer {
+private class BeebRenderer(
+    // Reports the picture's width as a fraction of the view (called on the GL thread).
+    private val onPictureWidthFraction: (Float) -> Unit,
+) : GLSurfaceView.Renderer {
 
     var quadDirty:      Boolean  = true
     // Set via GLSurfaceView.queueEvent — always read/written on the GL thread.
@@ -171,6 +178,7 @@ private class BeebRenderer : GLSurfaceView.Renderer {
             val surfAspect = surfWidth.toFloat() / surfHeight.toFloat()
             if (surfAspect > target) sx = target / surfAspect else sy = surfAspect / target
         }
+        onPictureWidthFraction(sx)
         posBuf.position(0)
         posBuf.put(floatArrayOf(
             -sx,  sy,

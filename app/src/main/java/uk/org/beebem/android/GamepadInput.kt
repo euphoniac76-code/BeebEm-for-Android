@@ -21,9 +21,12 @@ fun hasGameController(): Boolean = InputDevice.getDeviceIds().any { id ->
  * current [JoypadMapping], so the per-disc mappings already configured for the
  * on-screen joypad apply to the physical buttons too:
  *
- *   D-pad, left stick, hat  -> up / down / left / right
- *   A / B / X               -> fire1 / fire2 / fire3   (on-screen A / B / C)
- *   Y, L1, R1, L2, R2, L3, R3, Start -> extra per-disc slots (JoypadMapping.extras)
+ *   D-pad, left stick, hat  -> up / down / left / right (shared with the on-screen pad)
+ *   Face buttons            -> south / east / west / north, by position
+ *                              (the letters vary: the RG557's bottom button is printed B
+ *                              but sends BUTTON_A in Xbox mode)
+ *   L1, R1, L2, R2, L3, R3, Start -> further per-disc slots
+ *   (all physical-only buttons live in JoypadMapping.extras)
  *   Select + Start          -> SHIFT+BREAK (boot the disc in drive 0)
  *
  * While [configListener] is set (joypad CFG mode), presses are reported to it
@@ -212,10 +215,12 @@ class GamepadInput {
         KeyEvent.KEYCODE_DPAD_DOWN     -> "down"
         KeyEvent.KEYCODE_DPAD_LEFT     -> "left"
         KeyEvent.KEYCODE_DPAD_RIGHT    -> "right"
-        KeyEvent.KEYCODE_BUTTON_A      -> "fire1"
-        KeyEvent.KEYCODE_BUTTON_B      -> "fire2"
-        KeyEvent.KEYCODE_BUTTON_X      -> "fire3"
-        KeyEvent.KEYCODE_BUTTON_Y      -> "y"
+        // Android's face-button codes follow position (Xbox layout):
+        // A bottom, B right, X left, Y top.
+        KeyEvent.KEYCODE_BUTTON_A      -> "south"
+        KeyEvent.KEYCODE_BUTTON_B      -> "east"
+        KeyEvent.KEYCODE_BUTTON_X      -> "west"
+        KeyEvent.KEYCODE_BUTTON_Y      -> "north"
         KeyEvent.KEYCODE_BUTTON_L1     -> "l1"
         KeyEvent.KEYCODE_BUTTON_R1     -> "r1"
         KeyEvent.KEYCODE_BUTTON_L2     -> "l2"

@@ -36,9 +36,19 @@ data class JoypadMapping(
 
 // Physical-controller-only buttons, assignable per disc in CFG mode by
 // pressing the button. Select is reserved: Select+Start sends SHIFT+BREAK.
-val PHYSICAL_EXTRA_IDS = listOf("y", "l1", "r1", "l2", "r2", "l3", "r3", "start")
+//
+// The four face buttons are identified by position, because their letters
+// depend on the controller and its mode: in Xbox mode the bottom button sends
+// BUTTON_A, but on the RG557 it is printed "B". They are independent of the
+// on-screen A/B/C buttons.
+val PHYSICAL_EXTRA_IDS = listOf(
+    "south", "east", "west", "north", "l1", "r1", "l2", "r2", "l3", "r3", "start",
+)
 
 val DefaultExtras: Map<String, JoypadKey> = mapOf(
+    "south" to JoypadKey(6, 2, "SPC"),
+    "east"  to JoypadKey(0, 0, "SHF"),
+    "west"  to JoypadKey(0, 1, "CTL"),
     "start" to JoypadKey(4, 9, "RET"),
 )
 
@@ -205,17 +215,39 @@ object JoypadConfigManager {
         }
     }
 
-    private fun jsonToMapping(obj: JSONObject) = JoypadMapping(
-        up    = jsonToKey(obj.getJSONObject("up")),
-        down  = jsonToKey(obj.getJSONObject("down")),
-        left  = jsonToKey(obj.getJSONObject("left")),
-        right = jsonToKey(obj.getJSONObject("right")),
-        fire1 = jsonToKey(obj.getJSONObject("fire1")),
-        fire2 = jsonToKey(obj.getJSONObject("fire2")),
-        fire3 = jsonToKey(obj.getJSONObject("fire3")),
-        layout = obj.optJSONObject("layout")?.let { jsonToLayout(it) } ?: JoypadLayout(),
-        extras = obj.optJSONObject("extras")?.let { jsonToExtras(it) } ?: DefaultExtras,
-    )
+    private fun jsonToMapping(obj: JSONObject): JoypadMapping {
+        val fire1 = jsonToKey(obj.getJSONObject("fire1"))
+        val fire2 = jsonToKey(obj.getJSONObject("fire2"))
+        val fire3 = jsonToKey(obj.getJSONObject("fire3"))
+        val extras = obj.optJSONObject("extras")?.let { jsonToExtras(it) } ?: DefaultExtras
+        return JoypadMapping(
+            up    = jsonToKey(obj.getJSONObject("up")),
+            down  = jsonToKey(obj.getJSONObject("down")),
+            left  = jsonToKey(obj.getJSONObject("left")),
+            right = jsonToKey(obj.getJSONObject("right")),
+            fire1 = fire1,
+            fire2 = fire2,
+            fire3 = fire3,
+            layout = obj.optJSONObject("layout")?.let { jsonToLayout(it) } ?: JoypadLayout(),
+            extras = migrateFaceButtons(extras, fire1, fire2, fire3),
+        )
+    }
+
+    // Older configs had the physical A/B/X buttons share the on-screen A/B/C
+    // keys, and kept Y as "y". Copy those into the position-based face-button
+    // slots so each physical button keeps doing what it did.
+    private fun migrateFaceButtons(
+        extras: Map<String, JoypadKey>,
+        fire1: JoypadKey, fire2: JoypadKey, fire3: JoypadKey,
+    ): Map<String, JoypadKey> {
+        if ("south" in extras || "east" in extras || "west" in extras || "north" in extras) return extras
+        val migrated = extras.toMutableMap()
+        migrated["south"] = fire1
+        migrated["east"]  = fire2
+        migrated["west"]  = fire3
+        migrated.remove("y")?.let { migrated["north"] = it }
+        return migrated
+    }
 
     private fun jsonToExtras(obj: JSONObject): Map<String, JoypadKey> {
         val extras = mutableMapOf<String, JoypadKey>()

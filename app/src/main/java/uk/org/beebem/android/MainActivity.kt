@@ -174,14 +174,51 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
     var showMenu        by remember { mutableStateOf(false) }
     var showStatePicker by remember { mutableStateOf(false) }
     var savedStates     by remember { mutableStateOf<List<java.io.File>>(emptyList()) }
+    var showControls    by remember { mutableStateOf(false) }
 
     val joypadConfigPair = remember { JoypadConfigManager.load(context) }
     var joypadDefault by remember { mutableStateOf(joypadConfigPair.first) }
     val joypadDiscMappings = remember { joypadConfigPair.second }
     var currentJoypadMapping by remember { mutableStateOf(joypadConfigPair.first) }
 
+    // Where the current controls came from (shown in the ⋮ menu), and the
+    // automatic mapping for the current disc (known game or its instructions).
+    var controlsSource by remember { mutableStateOf("Default") }
+    var detectedMapping by remember { mutableStateOf<Pair<JoypadMapping, String>?>(null) }
+
+    // Elite cockpit overlay: on/off is remembered; offered when an Elite disc loads.
+    var eliteOverlayOn by remember { mutableStateOf(prefs.getBoolean("eliteOverlay", false)) }
+    var eliteOffer by remember { mutableStateOf(false) }
+    val isElite = isEliteDisc(disc0LocalFile)
+    var pictureFraction by remember { mutableFloatStateOf(1f) }
+    DisposableEffect(view) {
+        view.onPictureWidthFraction = { pictureFraction = it }
+        onDispose { view.onPictureWidthFraction = null }
+    }
+
+    // A newly mounted disc: its saved custom mapping if there is one, else the
+    // mapping for the known game or read from the disc, else the default.
+    fun useDisc(file: File) {
+        disc0LocalFile = file
+        detectedMapping = null
+        val saved = joypadDiscMappings[file.name]
+        currentJoypadMapping = saved ?: joypadDefault
+        controlsSource = if (saved != null) "Custom" else "Default"
+        eliteOffer = isEliteDisc(file) && !eliteOverlayOn
+        scope.launch {
+            val detected = withContext(Dispatchers.IO) { detectGameMapping(file) }
+            if (disc0LocalFile != file) return@launch
+            detectedMapping = detected
+            if (saved == null && detected != null) {
+                currentJoypadMapping = detected.first
+                controlsSource = detected.second
+            }
+        }
+    }
+
     fun onMappingChanged(newMapping: JoypadMapping) {
         currentJoypadMapping = newMapping
+        controlsSource = "Custom"
         val discName = disc0LocalFile?.name
         if (discName != null) joypadDiscMappings[discName] = newMapping
         else                  joypadDefault = newMapping
@@ -193,7 +230,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
         }
     }
 
-    val overlayVisible = showMenu || showGamePicker || showSearch || showStatePicker
+    val overlayVisible = showMenu || showGamePicker || showSearch || showStatePicker || showControls
     SideEffect {
         activity?.gamepad?.mapping = currentJoypadMapping
         activity?.overlayActive = overlayVisible
@@ -208,10 +245,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                 DiscManager.copyUriToPrivate(context, uri)
             } ?: return@launch
             val ok = BeebEmNative.nativeMountDisc(0, local.absolutePath, false)
-            if (ok) {
-                disc0LocalFile = local
-                currentJoypadMapping = joypadDiscMappings[local.name] ?: joypadDefault
-            }
+            if (ok) useDisc(local)
         }
     }
 
@@ -251,6 +285,23 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                 factory  = { view },
                 modifier = Modifier.fillMaxSize(),
             )
+
+            if (isElite && eliteOverlayOn) {
+                EliteOverlay(pictureWidthFraction = pictureFraction, modifier = Modifier.fillMaxSize())
+            }
+
+            if (eliteOffer) {
+                LaunchedEffect(Unit) { delay(10_000); eliteOffer = false }
+                EliteOffer(
+                    onShow = {
+                        eliteOverlayOn = true
+                        eliteOffer = false
+                        prefs.edit().putBoolean("eliteOverlay", true).apply()
+                    },
+                    onDismiss = { eliteOffer = false },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
 
             // Touch strip along the top edge that brings the hidden toolbar back.
             if (!toolbarVisible) {
@@ -377,12 +428,25 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                             showMenu = false
                             BeebEmNative.nativeEjectDisc(0)
                             disc0LocalFile = null
+                            detectedMapping = null
                             currentJoypadMapping = joypadDefault
+                            controlsSource = "Default"
                         }
                     }
                     HorizontalDivider(color = Color(0xFF1E1E30))
                     // Cycles BBC → 4:3 → Stretch; the menu stays open so the
                     // change can be seen behind it.
+                    MenuButton("Controls: $controlsSource") {
+                        showMenu = false
+                        showControls = true
+                    }
+                    if (isElite) {
+                        MenuButton("Elite cockpit keys: ${if (eliteOverlayOn) "ON" else "OFF"}") {
+                            eliteOverlayOn = !eliteOverlayOn
+                            eliteOffer = false
+                            prefs.edit().putBoolean("eliteOverlay", eliteOverlayOn).apply()
+                        }
+                    }
                     MenuButton("Aspect: ${aspectMode.label}") {
                         aspectMode = aspectMode.next()
                         prefs.edit().putString("aspect", aspectMode.name).apply()
@@ -418,8 +482,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
             ) {
                 GamePickerScreen(
                     onGameMounted = { file ->
-                        disc0LocalFile = file
-                        currentJoypadMapping = joypadDiscMappings[file.name] ?: joypadDefault
+                        useDisc(file)
                         scope.launch {
                             delay(300)
                             BeebEmNative.nativeBreakKey(true)
@@ -445,8 +508,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
             ) {
                 BbcSearchScreen(
                     onGameMounted = { file ->
-                        disc0LocalFile = file
-                        currentJoypadMapping = joypadDiscMappings[file.name] ?: joypadDefault
+                        useDisc(file)
                         scope.launch {
                             delay(300)
                             BeebEmNative.nativeBreakKey(true)
@@ -455,6 +517,46 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                         }
                     },
                     onDismiss = { showSearch = false },
+                )
+            }
+        }
+
+        // Controls — quick presets and the automatic mapping for this disc.
+        if (showControls) {
+            DisposableEffect(Unit) {
+                view.softPause()
+                onDispose { view.softResume() }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding(),
+            ) {
+                ControlsScreen(
+                    currentSource = controlsSource,
+                    detected      = detectedMapping,
+                    hasCustom     = disc0LocalFile?.name?.let { joypadDiscMappings.containsKey(it) } == true,
+                    discName      = disc0LocalFile?.name,
+                    onPick        = { mapping, source ->
+                        onMappingChanged(mapping.copy(layout = currentJoypadMapping.layout))
+                        controlsSource = source
+                        showControls = false
+                    },
+                    onClearCustom = {
+                        val name = disc0LocalFile?.name
+                        if (name != null) {
+                            joypadDiscMappings.remove(name)
+                            val defaultSnapshot = joypadDefault
+                            val discSnapshot    = joypadDiscMappings.toMap()
+                            scope.launch(Dispatchers.IO) {
+                                JoypadConfigManager.save(context, defaultSnapshot, discSnapshot)
+                            }
+                            currentJoypadMapping = detectedMapping?.first ?: joypadDefault
+                            controlsSource = detectedMapping?.second ?: "Default"
+                        }
+                        showControls = false
+                    },
+                    onDismiss = { showControls = false },
                 )
             }
         }

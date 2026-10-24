@@ -1,5 +1,6 @@
 package uk.org.beebem.android
 
+import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -19,6 +20,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -71,7 +73,11 @@ private fun displayName(id: String) = when (id) {
     "up"    -> "Up";    "down"  -> "Down"
     "left"  -> "Left";  "right" -> "Right"
     "fire1" -> "Fire A"; "fire2" -> "Fire B"; "fire3" -> "Fire C"
-    "y"     -> "Y button"
+    // Physical face buttons, named by position (their letters vary by controller and mode).
+    "south" -> "Bottom face button"
+    "east"  -> "Right face button"
+    "west"  -> "Left face button"
+    "north" -> "Top face button"
     "l1"    -> "L1"; "r1" -> "R1"; "l2" -> "L2"; "r2" -> "R2"
     "l3"    -> "L3 (left stick click)"; "r3" -> "R3 (right stick click)"
     "start" -> "Start"
@@ -445,11 +451,17 @@ private fun KeyPickerDialog(
 ) {
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        // Back is off: a controller's B button can arrive here as Back (e.g. the
+        // release of the press that opened the picker) and would close it. The
+        // Cancel button closes it instead.
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = false),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // Swallow controller buttons while the picker is open, so A is
+                // not taken as "select" on whatever the dialog has focused.
+                .onPreviewKeyEvent { KeyEvent.isGamepadButton(it.nativeKeyEvent.keyCode) }
                 .background(Color(0xFF1A1A2E))
                 .padding(horizontal = 8.dp, vertical = 6.dp),
         ) {
