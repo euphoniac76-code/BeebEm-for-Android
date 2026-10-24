@@ -291,7 +291,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
             }
 
             if (eliteOffer) {
-                LaunchedEffect(Unit) { delay(10_000); eliteOffer = false }
+                LaunchedEffect(Unit) { delay(20_000); eliteOffer = false }
                 EliteOffer(
                     onShow = {
                         eliteOverlayOn = true

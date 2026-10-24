@@ -66,7 +66,7 @@ private val RIGHT_GROUPS = listOf(
     EliteGroup("NAVIGATION", listOf(
         EliteKey("GALACTIC CHART", listOf("f4"), "f4"),
         EliteKey("LOCAL CHART", listOf("f5"), "f5"),
-        EliteKey("HYPERSPACE", listOf("H"), "H"),
+        EliteKey("HYPER SPACE", listOf("H"), "H"),
         EliteKey("GALACTIC HYP", listOf("CTL", "H"), "CTRL+H"),
         EliteKey("DISTANCE", listOf("D"), "D"),
         EliteKey("HOME", listOf("O"), "O"),
@@ -95,10 +95,15 @@ private val ELITE_YELLOW = Color(0xFFFFE000)
 private val ELITE_CYAN   = Color(0xFF00E0FF)
 private val ELITE_FONT   = FontFamily.Monospace
 
+// Elite draws its screen in the middle 256 of the 320 pixels of its mode
+// (32 of 40 character columns), so the panels may use the black margin of
+// the BBC picture outside Elite's frame.
+private const val ELITE_SCREEN_WIDTH = 256f / 320f
+
 @Composable
 fun EliteOverlay(pictureWidthFraction: Float, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier) {
-        val side = maxWidth * ((1f - pictureWidthFraction) / 2f) - 6.dp
+        val side = maxWidth * ((1f - pictureWidthFraction * ELITE_SCREEN_WIDTH) / 2f) - 6.dp
         if (side < 96.dp) return@BoxWithConstraints     // no room beside the picture
         val panelWidth = min(side, 220.dp)
         ElitePanel(LEFT_GROUPS, Modifier.align(Alignment.CenterStart).width(panelWidth).fillMaxHeight(), maxHeight)
@@ -110,7 +115,7 @@ fun EliteOverlay(pictureWidthFraction: Float, modifier: Modifier = Modifier) {
 private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp) {
     // Share the height between the button rows, after the group titles.
     val rows = groups.sumOf { (it.keys.size + it.columns - 1) / it.columns }
-    val titleH = 14.dp
+    val titleH = 17.dp
     val gap = 3.dp
     val rowH = ((height - 8.dp - titleH * groups.size - gap * (rows + groups.size)) / rows).coerceIn(22.dp, 46.dp)
 
@@ -123,6 +128,7 @@ private fun ElitePanel(groups: List<EliteGroup>, modifier: Modifier, height: Dp)
                 "◤ ${group.title} ◢",
                 color = ELITE_YELLOW.copy(alpha = 0.85f),
                 fontSize = 9.sp,
+                lineHeight = 12.sp,
                 fontFamily = ELITE_FONT,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp,
@@ -175,11 +181,21 @@ private fun EliteButton(key: EliteKey, modifier: Modifier) {
                 textAlign = TextAlign.Center,
                 maxLines = 2,
             )
-            val sub = listOfNotNull(key.hint.takeIf { it.isNotEmpty() }, key.docked?.let { "dock:$it" }).joinToString(" ")
-            if (sub.isNotEmpty()) {
+            if (key.hint.isNotEmpty()) {
                 Text(
-                    sub,
+                    key.hint,
                     color = ELITE_YELLOW.copy(alpha = 0.7f),
+                    fontSize = 7.sp,
+                    lineHeight = 8.sp,
+                    fontFamily = ELITE_FONT,
+                    maxLines = 1,
+                )
+            }
+            // Its meaning when docked, in cyan on its own line.
+            key.docked?.let {
+                Text(
+                    "DOCKED: $it",
+                    color = ELITE_CYAN.copy(alpha = 0.8f),
                     fontSize = 7.sp,
                     lineHeight = 8.sp,
                     fontFamily = ELITE_FONT,
