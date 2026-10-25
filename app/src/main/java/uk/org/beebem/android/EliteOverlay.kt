@@ -120,6 +120,32 @@ fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Mo
         if (side < 96.dp) return@BoxWithConstraints     // no room beside the picture
         val panelWidth = min(side, 220.dp)
         var showTrade by remember { mutableStateOf(false) }
+        // A purchase in progress (BUY on the trade panel), and its outcome.
+        val scope = rememberCoroutineScope()
+        var buying by remember { mutableStateOf(false) }
+        var buyStatus by remember { mutableStateOf<String?>(null) }
+        val onBuy: (BuyAdvice) -> Unit = { b ->
+            if (!buying) {
+                showTrade = false       // so the Buy Cargo screen can be seen
+                buying = true
+                scope.launch {
+                    val result = eliteBuy(
+                        b.item, b.units,
+                        read = { addr, len -> BeebEmNative.nativeReadMemory(addr, len) },
+                        press = { label, holdMs ->
+                            val k = bbcKey(label)
+                            BeebEmNative.nativeKeyDown(k.row, k.col)
+                            try { delay(holdMs) } finally { BeebEmNative.nativeKeyUp(k.row, k.col) }
+                        },
+                        onProgress = { buyStatus = it },
+                    )
+                    buyStatus = result.message
+                    buying = false
+                    delay(if (result.ok) 4000 else 8000)
+                    if (!buying) buyStatus = null
+                }
+            }
+        }
         val onAction: (EliteAction) -> Unit = { action ->
             when (action) {
                 EliteAction.MANUAL -> onManual()
@@ -131,12 +157,15 @@ fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Mo
         if (showTrade) {
             TradePanel(
                 onClose = { showTrade = false },
+                onBuy = onBuy,
+                buying = buying,
                 modifier = Modifier.align(Alignment.Center)
                     .widthIn(max = 460.dp)
                     .fillMaxWidth(pictureWidthFraction * ELITE_SCREEN_WIDTH)
                     .heightIn(max = maxHeight - 16.dp),
             )
         }
+        buyStatus?.let { BuyBanner(it, buying, Modifier.align(Alignment.BottomCenter)) }
     }
 }
 
@@ -259,7 +288,7 @@ private fun EliteButton(key: EliteKey, modifier: Modifier, onAction: (EliteActio
 private val ELITE_RED = Color(0xFFFF5050)
 
 @Composable
-private fun TradePanel(onClose: () -> Unit, modifier: Modifier) {
+private fun TradePanel(onClose: () -> Unit, onBuy: (BuyAdvice) -> Unit, buying: Boolean, modifier: Modifier) {
     var includeIllegal by remember { mutableStateOf(false) }
     var state by remember { mutableStateOf<EliteState?>(null) }
     LaunchedEffect(Unit) {
@@ -289,13 +318,16 @@ private fun TradePanel(onClose: () -> Unit, modifier: Modifier) {
                 "No Elite commander found. Trade advice works with the BBC disc version " +
                     "of Elite once a game is under way.", Color.White, 10)
             st.inWitchspace -> TradeText("IN WITCHSPACE · no market here.", Color.White, 10)
-            advice != null -> TradeAdviceBody(st, advice, includeIllegal) { includeIllegal = !includeIllegal }
+            advice != null -> TradeAdviceBody(st, advice, includeIllegal, onBuy, buying) { includeIllegal = !includeIllegal }
         }
     }
 }
 
 @Composable
-private fun TradeAdviceBody(st: EliteState, advice: TradeAdvice, includeIllegal: Boolean, onToggleIllegal: () -> Unit) {
+private fun TradeAdviceBody(
+    st: EliteState, advice: TradeAdvice, includeIllegal: Boolean,
+    onBuy: (BuyAdvice) -> Unit, buying: Boolean, onToggleIllegal: () -> Unit,
+) {
     val here = advice.here
     TradeText("${eliteName(here.name)} · ${ELITE_ECONOMIES[here.economy]} · ${ELITE_GOVERNMENTS[here.government]}",
         ELITE_CYAN, 10, bold = true)
@@ -330,7 +362,19 @@ private fun TradeAdviceBody(st: EliteState, advice: TradeAdvice, includeIllegal:
         val item = ELITE_ITEMS[b.item]
         val dest = b.destination
         Column(Modifier.fillMaxWidth().border(1.dp, ELITE_CYAN.copy(alpha = 0.3f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
-            TradeText("${i + 1}  BUY ${b.units}${item.unit} ${item.name} @ ${eliteTenths(b.price)}", Color.White, 10, bold = true)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TradeText("${i + 1}  BUY ${b.units}${item.unit} ${item.name} @ ${eliteTenths(b.price)}", Color.White, 10,
+                    bold = true, modifier = Modifier.weight(1f))
+                // Buys it through Elite's Buy Cargo screen (eliteBuy); docked only.
+                if (st.docked) {
+                    val shape = CutCornerShape(topStart = 4.dp, bottomEnd = 4.dp)
+                    TradeText("BUY ▶", if (buying) Color.Gray else ELITE_YELLOW, 10, bold = true,
+                        modifier = Modifier
+                            .border(1.dp, (if (buying) Color.Gray else ELITE_YELLOW).copy(alpha = 0.8f), shape)
+                            .tap { if (!buying) onBuy(b) }
+                            .padding(horizontal = 8.dp, vertical = 2.dp))
+                }
+            }
             Row {
                 TradeText("→ ${eliteName(dest.name)} ${eliteTenths(b.distance)} LY · ${ELITE_ECONOMIES[dest.economy]} · " +
                     ELITE_GOVERNMENTS[dest.government], ELITE_CYAN, 9, modifier = Modifier.weight(1f, fill = false))
@@ -346,6 +390,23 @@ private fun TradeAdviceBody(st: EliteState, advice: TradeAdvice, includeIllegal:
         modifier = Modifier.tap(onToggleIllegal).padding(vertical = 4.dp))
     TradeText("Prices elsewhere are set when you arrive, so each shows the lowest and highest Elite can choose.",
         Color.White.copy(alpha = 0.55f), 8)
+}
+
+/** Progress and outcome of a BUY, along the bottom of the screen. */
+@Composable
+private fun BuyBanner(text: String, buying: Boolean, modifier: Modifier) {
+    val shape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp)
+    Column(
+        modifier = modifier
+            .padding(bottom = 12.dp)
+            .background(Color(0xE6000814), shape)
+            .border(1.dp, ELITE_CYAN.copy(alpha = 0.7f), shape)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        TradeText(text, ELITE_YELLOW, 11, bold = true)
+        if (buying) TradeText("Hands off the keys until it's done", Color.White.copy(alpha = 0.7f), 9)
+    }
 }
 
 private fun signedTenths(v: Long) = (if (v >= 0) "+" else "-") + eliteTenths(kotlin.math.abs(v))
