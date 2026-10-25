@@ -22,11 +22,20 @@ object DiscManager {
         }.getOrNull()
     }
 
-    fun copyPrivateToUri(context: Context, localFile: File, uri: Uri) {
-        context.contentResolver.openOutputStream(uri)?.use { output ->
+    /** Copies the private image over [uri], truncating it first. Returns false on failure. */
+    fun copyPrivateToUri(context: Context, localFile: File, uri: Uri): Boolean = runCatching {
+        context.contentResolver.openOutputStream(uri, "wt")!!.use { output ->
             localFile.inputStream().use { input -> input.copyTo(output) }
         }
-    }
+        true
+    }.getOrDefault(false)
+
+    /** CRC-32 of a disc image, used to spot writes by the emulated BBC. Null if unreadable. */
+    fun checksum(file: File): Long? = runCatching {
+        val crc = java.util.zip.CRC32()
+        crc.update(file.readBytes())
+        crc.value
+    }.getOrNull()
 
     private fun queryDisplayName(context: Context, uri: Uri): String? {
         context.contentResolver.query(

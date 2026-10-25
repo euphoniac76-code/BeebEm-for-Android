@@ -168,6 +168,10 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
 
     var disc0LocalFile by remember { mutableStateOf<File?>(null) }
     val disc0Name = disc0LocalFile?.name
+    // The file the disc was loaded from (Load Disc), so writes such as saved
+    // games are copied back to it. Null for catalogue/search downloads, which
+    // live in app storage already.
+    var disc0SourceUri by remember { mutableStateOf<android.net.Uri?>(null) }
 
     var showGamePicker  by remember { mutableStateOf(false) }
     var showSearch      by remember { mutableStateOf(false) }
@@ -199,8 +203,9 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
 
     // A newly mounted disc: its saved custom mapping if there is one, else the
     // mapping for the known game or read from the disc, else the default.
-    fun useDisc(file: File) {
+    fun useDisc(file: File, source: android.net.Uri? = null) {
         disc0LocalFile = file
+        disc0SourceUri = source
         detectedMapping = null
         val saved = joypadDiscMappings[file.name]
         currentJoypadMapping = saved ?: joypadDefault
@@ -246,7 +251,41 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                 DiscManager.copyUriToPrivate(context, uri)
             } ?: return@launch
             val ok = BeebEmNative.nativeMountDisc(0, local.absolutePath, false)
-            if (ok) useDisc(local)
+            if (ok) useDisc(local, uri)
+        }
+    }
+
+    // Copy disc writes (e.g. a saved Elite commander) back to the original
+    // file. The emulator writes to the private copy; check it every 2 s, and
+    // once more when the disc is ejected or replaced.
+    LaunchedEffect(disc0LocalFile, disc0SourceUri) {
+        val file = disc0LocalFile ?: return@LaunchedEffect
+        val uri  = disc0SourceUri ?: return@LaunchedEffect
+        var synced = withContext(Dispatchers.IO) { DiscManager.checksum(file) }
+        var warned = false
+        suspend fun syncIfChanged() {
+            val now = withContext(Dispatchers.IO) { DiscManager.checksum(file) } ?: return
+            if (now == synced) return
+            val ok = withContext(Dispatchers.IO) { DiscManager.copyPrivateToUri(context, file, uri) }
+            if (ok) {
+                synced = now
+                Log.i("BeebEm", "Disc changes written back to ${file.name}")
+            } else if (!warned) {
+                warned = true
+                android.widget.Toast.makeText(
+                    context,
+                    "Couldn't write changes back to ${file.name}. Use Save Disc to keep them.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+        try {
+            while (true) {
+                delay(2000)
+                syncIfChanged()
+            }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable) { syncIfChanged() }
         }
     }
 

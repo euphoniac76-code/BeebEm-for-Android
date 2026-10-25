@@ -125,7 +125,9 @@ static void DrainOps() {
         } else {
             LOGE("DrainOps: unrecognised extension: %s", disc.path);
         }
-        if (ok && disc.writeProtect) mainWin->SetDiscWriteProtect(disc.drive, true);
+        // The 8271 starts every drive write-protected, so set the state either
+        // way; otherwise games can't save ("Disc read only").
+        if (ok) mainWin->SetDiscWriteProtect(disc.drive, disc.writeProtect);
         LOGI("DrainOps: mounted drive=%d path=%s ok=%d", disc.drive, disc.path, (int)ok);
     }
 
@@ -140,6 +142,10 @@ static void DrainOps() {
         if (r == UEFStateResult::Success) {
             // Re-anchor wall-clock timing: TotalCycles has changed.
             s_emuTiming = false;
+            // States saved before discs were mounted writable restore the
+            // drives as read-only; keep discs writable.
+            // (An empty drive is left alone by DiscWriteEnable.)
+            for (int d = 0; d < 2; d++) mainWin->SetDiscWriteProtect(d, false);
         }
     }
 
