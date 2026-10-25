@@ -332,8 +332,13 @@ private fun TradeAdviceBody(
     TradeText("${eliteName(here.name)} · ${ELITE_ECONOMIES[here.economy]} · ${ELITE_GOVERNMENTS[here.government]}",
         ELITE_CYAN, 10, bold = true)
     val held = (0..12).sumOf { st.hold[it] }
-    TradeText("CASH ${eliteTenths(st.cash)} CR · HOLD ${held}/${st.cargoBay}t · RANGE ${eliteTenths(advice.range)} LY" +
-        if (st.docked && st.fuel < 70) " (FULL TANK)" else "", Color.White, 9)
+    TradeText("CASH ${eliteTenths(st.cash)} CR · HOLD ${held}/${st.cargoBay}t · FUEL ${eliteTenths(st.fuel)} LY",
+        Color.White, 9)
+    // Docked, the advice plans for a full tank, as fuel is on sale here.
+    if (st.docked && st.fuel < 70) {
+        TradeText("Destinations up to ${eliteTenths(advice.range)} LY: refuel first (EQUIP SHIP, f3)",
+            ELITE_YELLOW.copy(alpha = 0.85f), 9)
+    }
     if (!st.docked) TradeText("Prices for this system. Dock at the station to trade.", Color.White.copy(alpha = 0.7f), 9)
 
     if (advice.sell.isNotEmpty()) {
