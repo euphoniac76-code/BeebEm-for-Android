@@ -342,6 +342,18 @@ Java_uk_org_beebem_android_BeebEmNative_nativeGetCycleCount(
     return (jlong)TotalCycles;
 }
 
+// A copy of len bytes of the BBC's main RAM from addr (e.g. a game's
+// variables, for the Elite trade advice). Read-only; a byte the 6502 writes
+// during the copy may be either its old or new value.
+JNIEXPORT jbyteArray JNICALL
+Java_uk_org_beebem_android_BeebEmNative_nativeReadMemory(
+        JNIEnv *env, jobject /*obj*/, jint addr, jint len) {
+    if (addr < 0 || len < 0 || addr + len > 0x8000) return nullptr;
+    jbyteArray out = env->NewByteArray(len);
+    if (out) env->SetByteArrayRegion(out, 0, len, (const jbyte *)&WholeRam[addr]);
+    return out;
+}
+
 JNIEXPORT void JNICALL
 Java_uk_org_beebem_android_BeebEmNative_nativeKeyDown(
         JNIEnv * /*env*/, jobject /*obj*/, jint beebRow, jint beebCol) {

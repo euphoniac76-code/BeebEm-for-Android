@@ -18,6 +18,8 @@ object BeebEmNative {
     // out[0] = first row, out[1] = last row (inclusive), out[2] = rows per TV scanline.
     external fun nativeGetDisplayRows(out: IntArray)
     external fun nativeGetCycleCount(): Long
+    // A copy of len bytes of the BBC's main RAM (0..&7FFF) from addr; null if out of range.
+    external fun nativeReadMemory(addr: Int, len: Int): ByteArray?
 
     external fun nativeKeyDown(beebRow: Int, beebCol: Int)
     external fun nativeKeyUp(beebRow: Int, beebCol: Int)
