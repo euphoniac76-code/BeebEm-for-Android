@@ -11,8 +11,11 @@ android {
         applicationId = "uk.org.beebem.android.gamepad"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-gamepad"
+        // CI builds number themselves from the workflow run, so each one is a
+        // newer version than the last (used by the GitHub release and Obtainium).
+        val ciBuild = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        versionCode = 2 + (ciBuild ?: 0)
+        versionName = if (ciBuild != null) "0.2.$ciBuild-gamepad" else "0.2.0-gamepad"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         externalNativeBuild {
             cmake { cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti") }
