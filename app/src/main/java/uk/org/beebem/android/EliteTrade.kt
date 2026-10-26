@@ -213,10 +213,31 @@ fun readEliteState(read: (addr: Int, len: Int) -> ByteArray?): EliteState? {
 /** A destination's sale price for an item: the range Elite may roll, and its average. */
 class PriceRange(val min: Int, val max: Int, val average: Double)
 
-fun elitePriceRange(item: EliteItem, economy: Int): PriceRange {
-    val prices = IntArray(256) { elitePrice(item, economy, it) }
-    return PriceRange(prices.min(), prices.max(), prices.average())
+fun elitePriceRange(item: EliteItem, economy: Int): PriceRange = PRICE_RANGES[ELITE_ITEMS.indexOf(item)][economy]
+
+// Every item's price range in every economy: 17 × 8, worked out once.
+private val PRICE_RANGES = Array(17) { i ->
+    Array(8) { economy ->
+        val prices = IntArray(256) { elitePrice(ELITE_ITEMS[i], economy, it) }
+        PriceRange(prices.min(), prices.max(), prices.average())
+    }
 }
+
+/**
+ * Units of an item on sale for a system's economy and market byte (GVL):
+ * base quantity + (QQ26 AND mask) ∓ economy × factor, none if that goes
+ * negative, then mod 64. Alien items are never on sale (var zeroes them).
+ */
+fun eliteAvailability(item: Int, economy: Int, random: Int): Int {
+    if (item == 16) return 0
+    val goods = ELITE_ITEMS[item]
+    val change = economy * abs(goods.factor)
+    val q = (QQ23_QUANTITY[item] + (random and goods.mask) + if (goods.factor < 0) change else -change) and 0xFF
+    return if (q >= 0x80) 0 else q and 0x3F
+}
+
+// Byte #2 of each QQ23 entry: the base quantity.
+private val QQ23_QUANTITY = intArrayOf(6, 10, 2, 226, 251, 54, 8, 56, 40, 17, 29, 220, 53, 66, 55, 250, 192)
 
 class SellAdvice(
     val item: Int,
@@ -240,6 +261,31 @@ class BuyAdvice(
     val profitAverage get() = units * (sale.average - price)
 }
 
+/**
+ * The second leg of a two-stop plan: what to buy at the first stop and where
+ * to sell it. The first stop's prices and stock are rolled on arrival, so the
+ * profit is the average over every roll (buying only when it pays).
+ */
+class SecondLeg(
+    val item: Int,
+    val units: Int,                 // typical amount bought
+    val buy: PriceRange,            // at the first stop, tenths per unit
+    val destination: EliteSystem,
+    val distance: Int,
+    val sale: PriceRange,
+    val expectedProfit: Double,     // tenths
+)
+
+/** Here → [via] → [second].destination: two loads, ranked by expected profit. */
+class TwoStopPlan(
+    val first: BuyAdvice?,          // null: fly to the first stop empty
+    val via: EliteSystem,
+    val viaDistance: Int,
+    val second: SecondLeg?,         // null: nothing worth carrying on
+) {
+    val expectedProfit get() = (first?.profitAverage ?: 0.0) + (second?.expectedProfit ?: 0.0)
+}
+
 class TradeAdvice(
     val here: EliteSystem,
     val range: Int,                 // tenths of a light year
@@ -247,6 +293,7 @@ class TradeAdvice(
     val tonnesFree: Int,            // after the recommended sales
     val sell: List<SellAdvice>,
     val buy: List<BuyAdvice>,       // alternatives, best first
+    val plans: List<TwoStopPlan>,   // best first
     val equipment: List<EquipmentAdvice>,
     // Cash to keep for trading: a full hold of the best buy here plus a full
     // tank of fuel (14 Cr). Equipment is best bought from cash above this.
@@ -291,21 +338,68 @@ fun eliteTradeAdvice(state: EliteState, includeIllegal: Boolean, maxOptions: Int
 
     // tnpr: items 0-12 share the bay; the others are limited to 199 units each.
     val tonnesFree = (state.cargoBay - (0..12).sumOf { hold[it] }).coerceAtLeast(0)
-    val buy = (0 until 17).mapNotNull { item ->
+    // Every profitable purchase here, to every system in range.
+    val options = (0 until 17).flatMap { item ->
         val goods = ELITE_ITEMS[item]
         val price = pricesHere[item]
-        if (state.available[item] == 0 || price == 0 || (goods.illegal && !includeIllegal)) return@mapNotNull null
+        if (state.available[item] == 0 || price == 0 || (goods.illegal && !includeIllegal)) return@flatMap emptyList()
         val space = if (item <= 12) tonnesFree else 199 - hold[item]
         val units = minOf(state.available[item].toLong(), cash / price, space.toLong()).toInt()
-        if (units <= 0) return@mapNotNull null
-        // The best place to sell this item, by average profit.
+        if (units <= 0) return@flatMap emptyList()
         reachable.map { (sys, d) -> BuyAdvice(item, units, price, sys, d, elitePriceRange(goods, sys.economy)) }
             .filter { it.sale.average > price }
-            .maxByOrNull { it.profitAverage }
-    }.sortedByDescending { it.profitAverage }.take(maxOptions)
+    }
+    // Best buys: each item's best place to sell, by average profit.
+    val buy = options.groupBy { it.item }.values.map { o -> o.maxBy { it.profitAverage } }
+        .sortedByDescending { it.profitAverage }.take(maxOptions)
+
+    // Two-stop plans: the best load to each system in range, then the best load
+    // from there (refuelling at the first stop) with the cash the first one made.
+    val plans = reachable.map { (via, d) ->
+        val first = options.filter { it.destination === via }.maxByOrNull { it.profitAverage }
+        val cashThere = cash + (first?.profitAverage ?: 0.0).toLong()
+        TwoStopPlan(first, via, d, bestSecondLeg(galaxy, via, cashThere, state.cargoBay, includeIllegal))
+    }.filter { it.expectedProfit > 0 }.sortedByDescending { it.expectedProfit }.take(maxOptions)
 
     val tradingFloat = (buy.firstOrNull()?.price ?: 0).toLong() * state.cargoBay + 140
-    return TradeAdvice(here, range, cash, tonnesFree, sell, buy, eliteEquipmentAdvice(state), tradingFloat)
+    return TradeAdvice(here, range, cash, tonnesFree, sell, buy, plans, eliteEquipmentAdvice(state), tradingFloat)
+}
+
+/**
+ * The best load to buy at [from], whose market byte is unknown until we
+ * arrive, and the system in range of it (with a full tank) that buys it for
+ * the most on average. For each possible roll the amount is limited by the
+ * stock, the hold (empty by then) and the cash, and nothing is bought on a
+ * roll where it wouldn't pay.
+ */
+private fun bestSecondLeg(
+    galaxy: List<EliteSystem>, from: EliteSystem, cash: Long, cargoBay: Int, includeIllegal: Boolean,
+): SecondLeg? {
+    val onward = galaxy.mapNotNull { sys ->
+        val d = eliteDistance(from.x, from.y, sys.x, sys.y)
+        if (sys !== from && d in 1..FULL_TANK) sys to d else null
+    }
+    if (onward.isEmpty()) return null
+    return (0 until 16).mapNotNull { item ->
+        val goods = ELITE_ITEMS[item]
+        if (goods.illegal && !includeIllegal) return@mapNotNull null
+        val (dest, d) = onward.maxBy { elitePriceRange(goods, it.first.economy).average }
+        val sale = elitePriceRange(goods, dest.economy)
+        val cap = (if (item <= 12) cargoBay else 199).toLong()
+        var profit = 0.0
+        var bought = 0L
+        var rolls = 0
+        for (r in 0..255) {
+            val price = elitePrice(goods, from.economy, r)
+            if (price == 0 || sale.average <= price) continue
+            val units = minOf(eliteAvailability(item, from.economy, r).toLong(), cap, cash / price)
+            if (units <= 0) continue
+            profit += units * (sale.average - price)
+            bought += units; rolls++
+        }
+        if (profit <= 0) return@mapNotNull null
+        SecondLeg(item, (bought / rolls).toInt(), elitePriceRange(goods, from.economy), dest, d, sale, profit / 256)
+    }.maxByOrNull { it.expectedProfit }
 }
 
 // ── Equipment advice ───────────────────────────────────────────────────────
@@ -374,6 +468,7 @@ private const val QQ11 = 0x0087     // view type (TT66), as below
 private const val XX13 = 0x0089     // Equip Ship: item being listed
 private const val QQ29 = 0x03AD     // item being asked about
 private const val NA_NAME = 0x1181  // NA%: last saved commander's name, CR-terminated
+private const val RLINE_MAX = 0x39EB  // RLINE+2 (docked code): 7 while asking for the name, else 9
 private const val VIEW_MENU = 1     // disc access menu (and other text screens)
 private const val VIEW_BUY = 2
 private const val VIEW_SELL = 4
@@ -634,6 +729,12 @@ fun eliteCommanderName(read: (addr: Int, len: Int) -> ByteArray?): String? {
  * name of the commander last loaded or saved (GTNME, TR1). Elite then goes to
  * the docking bay; on a disc error it shows the error and the menu again.
  * The app copies the changed disc back to the .ssd file (MainActivity).
+ *
+ * Each key is checked and pressed again if Elite missed it: GTNME sets the
+ * name's maximum length RLINE+2 to 7 before asking and back to 9 once the
+ * name (here just RETURN) is entered, so it shows exactly when Elite is
+ * asking. A RETURN pressed before Elite flushes the keyboard buffer (MT26)
+ * is lost, which is why one press is not always enough.
  */
 suspend fun eliteSaveCommander(
     read: (addr: Int, len: Int) -> ByteArray?,
@@ -657,10 +758,29 @@ suspend fun eliteSaveCommander(
     }
     onProgress("Opening the disc menu…")
     if (!keys.open("@", VIEW_MENU)) return EliteTradeResult(false, "The disc menu didn't open. Try again.")
-    press("2", KEY_HOLD_MS)
-    kotlinx.coroutines.delay(1000)          // GTNMEW pauses, then asks for the name
+    fun askingName() = keys.byte(RLINE_MAX) == 7
+
+    // 2: Save Commander, until Elite asks for the name.
+    var asking = false
+    for (attempt in 1..3) {
+        press("2", KEY_HOLD_MS)
+        asking = keys.waitFor(1500) { askingName() }
+        if (asking) break
+    }
+    if (!asking) {
+        if (keys.byte(QQ11) == VIEW_MENU) press("5", KEY_HOLD_MS)     // leave the menu (Exit)
+        return EliteTradeResult(false, "Elite didn't take the Save option. Try SAVE CMDR again.")
+    }
+    // RETURN alone keeps the current name; repeat until Elite has taken it.
     onProgress("Saving $who…")
-    keys.skip()
+    var entered = false
+    for (attempt in 1..3) {
+        kotlinx.coroutines.delay(500)       // let Elite flush the keyboard buffer first
+        keys.skip()
+        entered = keys.waitFor(1500) { !askingName() }
+        if (entered) break
+    }
+    if (!entered) return EliteTradeResult(false, "Elite is still asking for the name. Press RETURN to save.")
     return if (keys.waitFor(12000) { keys.byte(QQ11) == VIEW_STATUS })
         EliteTradeResult(true, "Saved $who.")
     else EliteTradeResult(false, "The save didn't finish. Check Elite's message (e.g. Disc read only).")

@@ -405,6 +405,7 @@ private fun TradeAdviceBody(
         }
     }
 
+    PlansSection(st, advice, onBuy, buying)
     EquipmentSection(st, advice)
 
     TradeText("ILLEGAL GOODS: ${if (includeIllegal) "ON" else "OFF"}  (tap to change)",
@@ -412,6 +413,52 @@ private fun TradeAdviceBody(
         modifier = Modifier.tap(onToggleIllegal).padding(vertical = 4.dp))
     TradeText("Prices elsewhere are set when you arrive, so each shows the lowest and highest Elite can choose.",
         Color.White.copy(alpha = 0.55f), 8)
+}
+
+/**
+ * Two-stop plans (TwoStopPlan): a load from here to a first stop, then a load
+ * from there, so a good outward trade isn't followed by an empty return.
+ */
+@Composable
+private fun PlansSection(st: EliteState, advice: TradeAdvice, onBuy: (BuyAdvice) -> Unit, buying: Boolean) {
+    if (advice.plans.isEmpty()) return
+    TradeHeading("TWO-STOP PLANS")
+    TradeText("Ranked by the expected profit of both loads together. The first stop's prices are set when you arrive.",
+        Color.White.copy(alpha = 0.6f), 8)
+    advice.plans.forEachIndexed { i, plan ->
+        val via = plan.via
+        Column(Modifier.fillMaxWidth().border(1.dp, ELITE_CYAN.copy(alpha = 0.3f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+            val last = plan.second?.destination
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TradeText("${i + 1}  → ${eliteName(via.name)}" + (last?.let { " → ${eliteName(it.name)}" } ?: "") +
+                    "   ≈ ${signedTenths(plan.expectedProfit.toLong())} CR", Color.White, 10, bold = true,
+                    modifier = Modifier.weight(1f, fill = false))
+                if (via.dangerous || last?.dangerous == true) TradeText(" ⚠ DANGER", ELITE_RED, 9, bold = true)
+            }
+            val first = plan.first
+            if (first != null) {
+                val item = ELITE_ITEMS[first.item]
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TradeText("Here: buy ${first.units}${item.unit} ${item.name} @ ${eliteTenths(first.price)}, " +
+                        "sells ${eliteTenths(first.sale.min)}–${eliteTenths(first.sale.max)} at ${eliteName(via.name)} " +
+                        "(${eliteTenths(first.distance)} LY)", ELITE_CYAN, 9, modifier = Modifier.weight(1f))
+                    if (st.docked) TradeButton("BUY ▶", buying) { onBuy(first) }
+                }
+            } else {
+                TradeText("Here: fly to ${eliteName(via.name)} empty (${eliteTenths(plan.viaDistance)} LY)", ELITE_CYAN, 9)
+            }
+            val second = plan.second
+            if (second != null) {
+                val item = ELITE_ITEMS[second.item]
+                TradeText("At ${eliteName(via.name)}: buy about ${second.units}${item.unit} ${item.name} " +
+                    "(${eliteTenths(second.buy.min)}–${eliteTenths(second.buy.max)}), sells " +
+                    "${eliteTenths(second.sale.min)}–${eliteTenths(second.sale.max)} at ${eliteName(second.destination.name)} " +
+                    "(${eliteTenths(second.distance)} LY)", ELITE_CYAN, 9)
+            } else {
+                TradeText("At ${eliteName(via.name)}: nothing there is worth carrying on", ELITE_CYAN, 9)
+            }
+        }
+    }
 }
 
 /**
