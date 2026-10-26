@@ -286,26 +286,80 @@ fun eliteTenths(v: Int): String = eliteTenths(v.toLong())
 /** A system name as Elite prints it in sentence case: "Lave". */
 fun eliteName(name: String): String = name.lowercase().replaceFirstChar { it.uppercase() }
 
-// ── Buying through Elite's own Buy Cargo screen ────────────────────────────
+// ── Buying and selling through Elite's own screens ─────────────────────────
 //
-// The BUY button presses the keys a player would: f1 opens Buy Cargo (TT219),
-// which asks "QUANTITY OF ...?" for each item in stock in turn (items out of
-// stock are passed without a question). RETURN on its own buys none, and
-// digits then RETURN buy that many. After a purchase Elite beeps and pauses
-// for a second, and it ignores a key that is already down when it starts
-// waiting (TT217), so rather than guess timings we watch Elite's item counter
-// QQ29 and press a key only once it has stayed put, i.e. Elite is waiting.
+// The BUY and SELL buttons press the keys a player would. f1 opens Buy Cargo
+// (TT219), which asks "QUANTITY OF ...?" for each item in stock in turn;
+// f2 opens Sell Cargo (TT208, TT210), which asks "SELL (Y/N)?" for each item
+// in the hold. Items it doesn't ask about are passed without a question.
+// Either way RETURN on its own answers none, and digits then RETURN that many
+// (gnum). Elite ignores a key that is already down when it starts waiting
+// (TT217) and pauses for a second after a purchase, so rather than guess
+// timings we watch its item counter QQ29 and press a key only once it has
+// stayed put, i.e. Elite is waiting.
 
-private const val QQ11 = 0x0087     // view type: 2 = Buy Cargo
+private const val QQ11 = 0x0087     // view type: 2 = Buy Cargo, 4 = Sell Cargo
 private const val QQ29 = 0x03AD     // item being asked about
 private const val VIEW_BUY = 2
+private const val VIEW_SELL = 4
 
 private const val KEY_HOLD_MS = 150L        // long enough for Elite's key scan
 private const val DIGIT_GAP_MS = 500L       // between the digits of a quantity
 private const val SETTLED_MS = 400L         // QQ29 unchanged this long = waiting
 private const val POLL_MS = 50L
 
-class EliteBuyResult(val ok: Boolean, val message: String)
+class EliteTradeResult(val ok: Boolean, val message: String)
+
+/** Watching Elite's memory and pressing its keys, for eliteBuy and eliteSell. */
+private class EliteKeys(
+    val read: (addr: Int, len: Int) -> ByteArray?,
+    val press: suspend (label: String, holdMs: Long) -> Unit,
+) {
+    fun byte(addr: Int) = read(addr, 1)?.let { it[0].toInt() and 0xFF } ?: -1
+    fun held(item: Int) = byte(QQ20 + item)
+
+    suspend fun waitFor(timeoutMs: Long, cond: () -> Boolean): Boolean {
+        var t = 0L
+        while (!cond()) {
+            if (t >= timeoutMs) return false
+            kotlinx.coroutines.delay(POLL_MS); t += POLL_MS
+        }
+        return true
+    }
+
+    /** The item Elite is waiting on: QQ29 unchanged for SETTLED_MS. */
+    suspend fun settledItem(timeoutMs: Long): Int? {
+        var last = byte(QQ29); var still = 0L; var t = 0L
+        while (t < timeoutMs) {
+            kotlinx.coroutines.delay(POLL_MS); t += POLL_MS
+            val now = byte(QQ29)
+            if (now == last) { still += POLL_MS; if (still >= SETTLED_MS) return now } else { last = now; still = 0 }
+        }
+        return null
+    }
+
+    /** Opens a screen with its f key; false if Elite didn't switch to it. */
+    suspend fun open(key: String, view: Int): Boolean {
+        press(key, KEY_HOLD_MS)
+        if (!waitFor(3000) { byte(QQ11) == view }) return false
+        // Elite draws the headings before it resets QQ29, so let it get going.
+        kotlinx.coroutines.delay(800)
+        return true
+    }
+
+    /** Answers the question with a quantity: its digits, then RETURN. */
+    suspend fun enter(amount: Int) {
+        for (digit in amount.toString()) {
+            press(digit.toString(), KEY_HOLD_MS)
+            kotlinx.coroutines.delay(DIGIT_GAP_MS)
+        }
+        press("RET", KEY_HOLD_MS)
+    }
+
+    suspend fun skip() = press("RET", KEY_HOLD_MS)
+}
+
+private val STOPPED = EliteTradeResult(false, "Elite stopped responding. Check the screen.")
 
 /**
  * Buys [units] of [item] at the docked station by driving Elite's Buy Cargo
@@ -319,80 +373,113 @@ suspend fun eliteBuy(
     read: (addr: Int, len: Int) -> ByteArray?,
     press: suspend (label: String, holdMs: Long) -> Unit,
     onProgress: (String) -> Unit = {},
-): EliteBuyResult {
+): EliteTradeResult {
     val goods = ELITE_ITEMS[item]
-    val state = readEliteState(read) ?: return EliteBuyResult(false, "No Elite commander found.")
-    if (!state.docked) return EliteBuyResult(false, "Dock at a station to buy.")
-    fun byte(addr: Int) = read(addr, 1)?.let { it[0].toInt() and 0xFF } ?: -1
-    if (byte(QQ11) == VIEW_BUY) return EliteBuyResult(false, "Finish the Buy Cargo screen first.")
+    val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
+    if (!state.docked) return EliteTradeResult(false, "Dock at a station to buy.")
+    val keys = EliteKeys(read, press)
+    if (keys.byte(QQ11) == VIEW_BUY || keys.byte(QQ11) == VIEW_SELL)
+        return EliteTradeResult(false, "Finish the Buy or Sell Cargo screen first.")
 
     // tnpr and LCASH: what Elite will accept now.
     val price = elitePrice(goods, state.economy, state.marketRandom)
     val space = if (item <= 12) state.cargoBay - (0..12).sumOf { state.hold[it] } else 199 - state.hold[item]
     val amount = minOf(units.toLong(), state.available[item].toLong(), space.toLong(),
         if (price > 0) state.cash / price else 0L).toInt()
-    if (amount <= 0) return EliteBuyResult(false, when {
+    if (amount <= 0) return EliteTradeResult(false, when {
         state.available[item] == 0 -> "No ${goods.name} on sale here."
         space <= 0 -> "No room in the hold. Sell cargo first (f2)."
         else -> "Not enough cash for ${goods.name}."
     })
     val before = state.hold[item]
 
-    suspend fun waitFor(timeoutMs: Long, cond: () -> Boolean): Boolean {
-        var t = 0L
-        while (!cond()) {
-            if (t >= timeoutMs) return false
-            kotlinx.coroutines.delay(POLL_MS); t += POLL_MS
-        }
-        return true
-    }
-    // The item Elite is waiting on: QQ29 unchanged for SETTLED_MS.
-    suspend fun settledItem(timeoutMs: Long): Int? {
-        var last = byte(QQ29); var still = 0L; var t = 0L
-        while (t < timeoutMs) {
-            kotlinx.coroutines.delay(POLL_MS); t += POLL_MS
-            val now = byte(QQ29)
-            if (now == last) { still += POLL_MS; if (still >= SETTLED_MS) return now } else { last = now; still = 0 }
-        }
-        return null
-    }
-
     onProgress("Opening Buy Cargo…")
-    press("f1", KEY_HOLD_MS)
-    if (!waitFor(3000) { byte(QQ11) == VIEW_BUY }) return EliteBuyResult(false, "The Buy Cargo screen didn't open. Try again.")
-    // Elite draws the headings before it resets QQ29, so let it get going.
-    kotlinx.coroutines.delay(800)
+    if (!keys.open("f1", VIEW_BUY)) return EliteTradeResult(false, "The Buy Cargo screen didn't open. Try again.")
 
     var bought = false
     var refused = false
     while (true) {
-        val asking = settledItem(5000) ?: return EliteBuyResult(false, "Elite stopped responding. Check the screen.")
-        if (byte(QQ11) != VIEW_BUY || asking >= 17) break          // done: on to Inventory
+        val asking = keys.settledItem(5000) ?: return STOPPED
+        if (keys.byte(QQ11) != VIEW_BUY || asking >= 17) break          // done: on to Inventory
         if (asking == item && !bought && !refused) {
             onProgress("Buying $amount${goods.unit} ${goods.name}…")
-            for (digit in amount.toString()) {
-                press(digit.toString(), KEY_HOLD_MS)
-                kotlinx.coroutines.delay(DIGIT_GAP_MS)
-            }
-            press("RET", KEY_HOLD_MS)
-            bought = waitFor(3000) { read(QQ20 + item, 1)?.let { it[0].toInt() and 0xFF } == before + amount }
+            keys.enter(amount)
+            bought = keys.waitFor(3000) { keys.held(item) == before + amount }
             if (!bought) {
                 // Elite said "Cash?" or "Cargo?" and asks again: buy none.
                 refused = true
-                settledItem(3000)
-                press("RET", KEY_HOLD_MS)
+                keys.settledItem(3000)
+                keys.skip()
             }
         } else {
             onProgress(if (bought) "Finishing…" else "Skipping ${ELITE_ITEMS.getOrNull(asking)?.name ?: "item"}…")
-            press("RET", KEY_HOLD_MS)
+            keys.skip()
         }
         // Wait for Elite to move on (after a purchase it pauses for a second).
-        if (!waitFor(4000) { byte(QQ29) != asking || byte(QQ11) != VIEW_BUY })
-            return EliteBuyResult(false, "Elite stopped responding. Check the screen.")
+        if (!keys.waitFor(4000) { keys.byte(QQ29) != asking || keys.byte(QQ11) != VIEW_BUY }) return STOPPED
     }
     return when {
-        bought -> EliteBuyResult(true, "Bought $amount${goods.unit} ${goods.name}.")
-        refused -> EliteBuyResult(false, "Elite refused the purchase. Nothing bought.")
-        else -> EliteBuyResult(false, "${goods.name} wasn't offered. Nothing bought.")
+        bought -> EliteTradeResult(true, "Bought $amount${goods.unit} ${goods.name}.")
+        refused -> EliteTradeResult(false, "Elite refused the purchase. Nothing bought.")
+        else -> EliteTradeResult(false, "${goods.name} wasn't offered. Nothing bought.")
+    }
+}
+
+/**
+ * Sells all of each of [items] in the hold at the docked station by driving
+ * Elite's Sell Cargo screen, keeping the rest of the cargo (RETURN), so Elite
+ * finishes on the Inventory screen.
+ *
+ * Unlike Buy Cargo, QQ29 stays on the last item after the last question while
+ * Elite beeps and pauses, so an item counts as asked about only if it is in
+ * the hold and not yet answered.
+ */
+suspend fun eliteSell(
+    items: Set<Int>,
+    read: (addr: Int, len: Int) -> ByteArray?,
+    press: suspend (label: String, holdMs: Long) -> Unit,
+    onProgress: (String) -> Unit = {},
+): EliteTradeResult {
+    val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
+    if (!state.docked) return EliteTradeResult(false, "Dock at a station to sell.")
+    val keys = EliteKeys(read, press)
+    if (keys.byte(QQ11) == VIEW_BUY || keys.byte(QQ11) == VIEW_SELL)
+        return EliteTradeResult(false, "Finish the Buy or Sell Cargo screen first.")
+    val toSell = items.filter { state.hold[it] > 0 }.toSet()
+    if (toSell.isEmpty()) return EliteTradeResult(false, "Nothing to sell.")
+
+    onProgress("Opening Sell Cargo…")
+    if (!keys.open("f2", VIEW_SELL)) return EliteTradeResult(false, "The Sell Cargo screen didn't open. Try again.")
+
+    val answered = mutableSetOf<Int>()
+    val sold = mutableListOf<String>()
+    var refused = false
+    while (true) {
+        val asking = keys.settledItem(5000) ?: return STOPPED
+        if (keys.byte(QQ11) != VIEW_SELL) break                         // done: on to Inventory
+        val question = asking in 0..16 && asking !in answered && keys.held(asking) > 0
+        if (question) {
+            val goods = ELITE_ITEMS[asking]
+            val units = keys.held(asking)
+            if (asking in toSell) {
+                onProgress("Selling $units${goods.unit} ${goods.name}…")
+                keys.enter(units)
+                if (keys.waitFor(3000) { keys.held(asking) == 0 }) sold += "$units${goods.unit} ${goods.name}"
+                else refused = true
+            } else {
+                onProgress("Keeping ${goods.name}…")
+                keys.skip()
+            }
+            answered += asking
+        }
+        // Wait for Elite to move on to the next question, or to finish.
+        if (!keys.waitFor(4000) { keys.byte(QQ29) != asking || keys.byte(QQ11) != VIEW_SELL }) return STOPPED
+    }
+    val after = readEliteState(read)
+    val earned = if (after != null) " for ${eliteTenths(after.cash - state.cash)} CR" else ""
+    return when {
+        sold.isEmpty() -> EliteTradeResult(false, "Elite didn't take the sale. Nothing sold.")
+        refused -> EliteTradeResult(false, "Sold ${sold.joinToString()}$earned, but not everything.")
+        else -> EliteTradeResult(true, "Sold ${sold.joinToString()}$earned.")
     }
 }
