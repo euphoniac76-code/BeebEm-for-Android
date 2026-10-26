@@ -210,6 +210,9 @@ private fun normalise(name: String) =
 /** True if this disc is Elite (any version). */
 fun isEliteDisc(file: File?): Boolean = file != null && "elite" in normalise(file.name)
 
+/** True if this disc's name says Citadel (the guide also spots the game in memory). */
+fun isCitadelDisc(file: File?): Boolean = file != null && "citadel" in normalise(file.name)
+
 /**
  * The mapping to use for a disc that has no saved custom mapping: a known
  * game by file name, else the checked list for Rob's collection, else

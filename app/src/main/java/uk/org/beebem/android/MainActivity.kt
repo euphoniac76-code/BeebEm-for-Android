@@ -195,6 +195,18 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
     var eliteOverlayOn by remember { mutableStateOf(prefs.getBoolean("eliteOverlay", false)) }
     var eliteOffer by remember { mutableStateOf(false) }
     val isElite = isEliteDisc(disc0LocalFile)
+
+    // Citadel guide: on unless turned off. Shown for a disc named Citadel or
+    // whenever Citadel is found in memory (so renamed and modded copies count).
+    var citadelGuideOn by remember { mutableStateOf(prefs.getBoolean("citadelGuide", true)) }
+    var citadelInMemory by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            citadelInMemory = isCitadelInMemory { addr, len -> BeebEmNative.nativeReadMemory(addr, len) }
+            delay(2000)
+        }
+    }
+    val isCitadel = citadelInMemory || isCitadelDisc(disc0LocalFile)
     var pictureFraction by remember { mutableFloatStateOf(1f) }
     DisposableEffect(view) {
         view.onPictureWidthFraction = { pictureFraction = it }
@@ -330,6 +342,13 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                 EliteOverlay(
                     pictureWidthFraction = pictureFraction,
                     onManual = { showManual = true },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+
+            if (isCitadel && citadelGuideOn && !(isElite && eliteOverlayOn)) {
+                CitadelOverlay(
+                    pictureWidthFraction = pictureFraction,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -490,6 +509,12 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                             eliteOverlayOn = !eliteOverlayOn
                             eliteOffer = false
                             prefs.edit().putBoolean("eliteOverlay", eliteOverlayOn).apply()
+                        }
+                    }
+                    if (isCitadel) {
+                        MenuButton("Citadel guide: ${if (citadelGuideOn) "ON" else "OFF"}") {
+                            citadelGuideOn = !citadelGuideOn
+                            prefs.edit().putBoolean("citadelGuide", citadelGuideOn).apply()
                         }
                     }
                     MenuButton("Aspect: ${aspectMode.label}") {
