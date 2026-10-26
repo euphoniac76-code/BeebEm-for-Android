@@ -44,7 +44,7 @@ private data class EliteKey(
     val action: EliteAction? = null,     // an app feature instead of BBC keys
 )
 
-private enum class EliteAction { MANUAL, TRADE }
+private enum class EliteAction { MANUAL, TRADE, SAVE }
 
 private data class EliteGroup(val title: String, val keys: List<EliteKey>, val columns: Int = 2)
 
@@ -98,7 +98,10 @@ private val RIGHT_GROUPS = listOf(
     EliteGroup("GAME", listOf(
         EliteKey("PAUSE", listOf("COPY"), "COPY"),
         EliteKey("RESUME", listOf("DEL"), "DEL"),
-        EliteKey("SAVE / LOAD", listOf("@"), "@"),
+        // Saves to the current commander's file (eliteSaveCommander); the disc
+        // menu itself is for loading another commander.
+        EliteKey("SAVE CMDR", emptyList(), "@ 2 RETURN", action = EliteAction.SAVE),
+        EliteKey("DISC MENU", listOf("@"), "@ (LOAD)"),
         EliteKey("MANUAL", emptyList(), "ORIGINAL", action = EliteAction.MANUAL),   // the flight training manual
     )),
 )
@@ -120,7 +123,7 @@ fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Mo
         if (side < 96.dp) return@BoxWithConstraints     // no room beside the picture
         val panelWidth = min(side, 220.dp)
         var showTrade by remember { mutableStateOf(false) }
-        // A purchase or sale in progress (BUY / SELL on the trade panel), and its outcome.
+        // A purchase, sale, refuel or save in progress, and its outcome.
         val scope = rememberCoroutineScope()
         var buying by remember { mutableStateOf(false) }
         var buyStatus by remember { mutableStateOf<String?>(null) }
@@ -132,7 +135,7 @@ fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Mo
         }
         fun trade(job: suspend (onProgress: (String) -> Unit) -> EliteTradeResult) {
             if (buying) return
-            showTrade = false       // so Elite's Buy or Sell Cargo screen can be seen
+            showTrade = false       // so the Elite screen being used can be seen
             buying = true
             scope.launch {
                 val result = job { buyStatus = it }
@@ -144,10 +147,12 @@ fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Mo
         }
         val onBuy: (BuyAdvice) -> Unit = { b -> trade { eliteBuy(b.item, b.units, read, press, it) } }
         val onSell: (Set<Int>) -> Unit = { items -> trade { eliteSell(items, read, press, it) } }
+        val onSellAllAndRefuel: () -> Unit = { trade { eliteSellAllAndRefuel(read, press, it) } }
         val onAction: (EliteAction) -> Unit = { action ->
             when (action) {
                 EliteAction.MANUAL -> onManual()
                 EliteAction.TRADE -> showTrade = !showTrade
+                EliteAction.SAVE -> trade { eliteSaveCommander(read, press, it) }
             }
         }
         ElitePanel(LEFT_GROUPS, Modifier.align(Alignment.CenterStart).width(panelWidth).fillMaxHeight(), maxHeight, onAction)
@@ -157,6 +162,7 @@ fun EliteOverlay(pictureWidthFraction: Float, onManual: () -> Unit, modifier: Mo
                 onClose = { showTrade = false },
                 onBuy = onBuy,
                 onSell = onSell,
+                onSellAllAndRefuel = onSellAllAndRefuel,
                 buying = buying,
                 modifier = Modifier.align(Alignment.Center)
                     .widthIn(max = 460.dp)
@@ -288,7 +294,8 @@ private val ELITE_RED = Color(0xFFFF5050)
 
 @Composable
 private fun TradePanel(
-    onClose: () -> Unit, onBuy: (BuyAdvice) -> Unit, onSell: (Set<Int>) -> Unit, buying: Boolean, modifier: Modifier,
+    onClose: () -> Unit, onBuy: (BuyAdvice) -> Unit, onSell: (Set<Int>) -> Unit, onSellAllAndRefuel: () -> Unit,
+    buying: Boolean, modifier: Modifier,
 ) {
     var includeIllegal by remember { mutableStateOf(false) }
     var state by remember { mutableStateOf<EliteState?>(null) }
@@ -319,7 +326,7 @@ private fun TradePanel(
                 "No Elite commander found. Trade advice works with the BBC disc version " +
                     "of Elite once a game is under way.", Color.White, 10)
             st.inWitchspace -> TradeText("IN WITCHSPACE · no market here.", Color.White, 10)
-            advice != null -> TradeAdviceBody(st, advice, includeIllegal, onBuy, onSell, buying) { includeIllegal = !includeIllegal }
+            advice != null -> TradeAdviceBody(st, advice, includeIllegal, onBuy, onSell, onSellAllAndRefuel, buying) { includeIllegal = !includeIllegal }
         }
     }
 }
@@ -327,7 +334,8 @@ private fun TradePanel(
 @Composable
 private fun TradeAdviceBody(
     st: EliteState, advice: TradeAdvice, includeIllegal: Boolean,
-    onBuy: (BuyAdvice) -> Unit, onSell: (Set<Int>) -> Unit, buying: Boolean, onToggleIllegal: () -> Unit,
+    onBuy: (BuyAdvice) -> Unit, onSell: (Set<Int>) -> Unit, onSellAllAndRefuel: () -> Unit,
+    buying: Boolean, onToggleIllegal: () -> Unit,
 ) {
     val here = advice.here
     TradeText("${eliteName(here.name)} · ${ELITE_ECONOMIES[here.economy]} · ${ELITE_GOVERNMENTS[here.government]}",
@@ -341,6 +349,10 @@ private fun TradeAdviceBody(
             ELITE_YELLOW.copy(alpha = 0.85f), 9)
     }
     if (!st.docked) TradeText("Prices for this system. Dock at the station to trade.", Color.White.copy(alpha = 0.7f), 9)
+    // Sells every item in the hold, then fills the tank (eliteSellAllAndRefuel).
+    if (st.docked && (st.hold.any { it > 0 } || st.fuel < 70)) {
+        Row(Modifier.padding(top = 2.dp)) { TradeButton("SELL ALL & REFUEL ▶", buying, onSellAllAndRefuel) }
+    }
 
     if (advice.sell.isNotEmpty()) {
         // SELL ALL sells everything recommended for sale here in one visit to Sell Cargo.
@@ -393,11 +405,42 @@ private fun TradeAdviceBody(
         }
     }
 
+    EquipmentSection(st, advice)
+
     TradeText("ILLEGAL GOODS: ${if (includeIllegal) "ON" else "OFF"}  (tap to change)",
         if (includeIllegal) ELITE_RED else ELITE_CYAN, 9, bold = true,
         modifier = Modifier.tap(onToggleIllegal).padding(vertical = 4.dp))
     TradeText("Prices elsewhere are set when you arrive, so each shows the lowest and highest Elite can choose.",
         Color.White.copy(alpha = 0.55f), 8)
+}
+
+/**
+ * What to fit next (eliteEquipmentAdvice), whether it's sold here, and
+ * whether it can be bought without dipping into the trading float.
+ */
+@Composable
+private fun EquipmentSection(st: EliteState, advice: TradeAdvice) {
+    if (advice.equipment.isEmpty()) return
+    TradeHeading("NEXT EQUIPMENT")
+    val best = advice.buy.firstOrNull()
+    TradeText("Keep a trading float of ${eliteTenths(advice.tradingFloat)} CR" +
+        (best?.let { " (a full hold of ${ELITE_ITEMS[it.item].name}, and fuel)" } ?: " (fuel)"),
+        Color.White.copy(alpha = 0.7f), 8)
+    advice.equipment.forEachIndexed { i, e ->
+        Column(Modifier.fillMaxWidth().border(1.dp, ELITE_CYAN.copy(alpha = 0.3f)).padding(horizontal = 6.dp, vertical = 3.dp)) {
+            TradeText("${i + 1}  ${e.name} · ${eliteTenths(e.price)} CR", Color.White, 10, bold = true)
+            TradeText(e.why, ELITE_CYAN, 9)
+            val here = advice.here.techLevel
+            val spare = st.cash - advice.tradingFloat
+            val (text, color) = when {
+                here < e.techNeeded -> "Needs tech level ${e.techNeeded} (here $here)" to Color.White.copy(alpha = 0.6f)
+                st.cash < e.price -> "On sale here (EQUIP SHIP, f3, item ${e.menuNumber}) · need ${eliteTenths(e.price - st.cash)} CR more" to Color.White.copy(alpha = 0.6f)
+                spare < e.price -> "On sale here (f3, item ${e.menuNumber}) · affordable, but dips into your float" to ELITE_YELLOW
+                else -> "On sale here (f3, item ${e.menuNumber}) · affordable, and keeps your float" to ELITE_YELLOW
+            }
+            TradeText(text, color, 9, bold = color == ELITE_YELLOW)
+        }
+    }
 }
 
 /** Progress and outcome of a BUY, along the bottom of the screen. */

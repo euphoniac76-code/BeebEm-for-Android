@@ -71,6 +71,7 @@ class EliteSystem(
     val y: Int,
     val economy: Int,
     val government: Int,
+    val techLevel: Int,         // as Elite shows it, 1-15
 ) {
     val dangerous get() = government <= 1     // anarchy or feudal
 }
@@ -94,6 +95,8 @@ fun eliteGalaxy(seeds: IntArray): List<EliteSystem> {
         var economy = s[1] and 7
         val government = (s[2] shr 3) and 7
         if (government <= 1) economy = economy or 2
+        // TT24: flipped economy + (s1_hi AND 3) + government / 2 rounded up, shown + 1.
+        val techLevel = (economy xor 7) + (s[3] and 3) + (government + 1) / 2 + 1
         // Name (cpl): three or four letter pairs, from s2_hi of successive twists.
         val n = s.copyOf()
         val sb = StringBuilder()
@@ -102,7 +105,7 @@ fun eliteGalaxy(seeds: IntArray): List<EliteSystem> {
             if (pair != 0) sb.append(NAME_PAIRS, pair * 2, pair * 2 + 2)
             twist(n)
         }
-        val system = EliteSystem(i, sb.toString().replace("?", ""), s[3], s[1], economy, government)
+        val system = EliteSystem(i, sb.toString().replace("?", ""), s[3], s[1], economy, government, techLevel)
         repeat(4) { twist(s) }      // TT20: on to the next system
         system
     }
@@ -130,6 +133,15 @@ class EliteState(
     val available: IntArray,    // units of each item for sale here
     val marketRandom: Int,      // QQ26
     val economy: Int,           // QQ28
+    val frontLaser: Int,        // LASER: 0 none, else POW, POW+128 (beam), Armlas, Mlas
+    val ecm: Boolean,
+    val fuelScoops: Boolean,
+    val energyBomb: Boolean,
+    val energyUnit: Boolean,
+    val dockingComputer: Boolean,
+    val galacticHyperdrive: Boolean,
+    val escapePod: Boolean,
+    val missiles: Int,
 )
 
 // Addresses in disc Elite (the same in the docked and flight code).
@@ -141,8 +153,11 @@ private const val QQ21 = 0x035B     // galaxy seeds
 private const val CASH = 0x0361     // 4 bytes, big-endian, tenths
 private const val QQ14 = 0x0365     // fuel
 private const val GCNT = 0x0367
+private const val LASER = 0x0368    // 4 bytes: front, rear, left, right
 private const val CRGO = 0x036E     // cargo bay + 2
 private const val QQ20 = 0x036F     // hold, 17 bytes
+private const val ECM = 0x0380      // then BST, BOMB, ENGY, DKCMP, GHYP, ESCP
+private const val NOMSL = 0x038B    // missiles
 private const val AVL = 0x038D      // availability, 17 bytes
 private const val QQ26 = 0x039E     // market random byte
 private const val QQ28 = 0x03AC     // economy
@@ -178,6 +193,15 @@ fun readEliteState(read: (addr: Int, len: Int) -> ByteArray?): EliteState? {
         available = bytes(AVL, 17),
         marketRandom = b(QQ26),
         economy = economy,
+        frontLaser = b(LASER),
+        ecm = b(ECM) != 0,
+        fuelScoops = b(ECM + 1) != 0,
+        energyBomb = b(ECM + 2) != 0,
+        energyUnit = b(ECM + 3) != 0,
+        dockingComputer = b(ECM + 4) != 0,
+        galacticHyperdrive = b(ECM + 5) != 0,
+        escapePod = b(ECM + 6) != 0,
+        missiles = b(NOMSL),
     )
     // The seeds must generate a system where we are, with the economy Elite
     // says this system has.
@@ -223,6 +247,10 @@ class TradeAdvice(
     val tonnesFree: Int,            // after the recommended sales
     val sell: List<SellAdvice>,
     val buy: List<BuyAdvice>,       // alternatives, best first
+    val equipment: List<EquipmentAdvice>,
+    // Cash to keep for trading: a full hold of the best buy here plus a full
+    // tank of fuel (14 Cr). Equipment is best bought from cash above this.
+    val tradingFloat: Long,
 )
 
 // Elite measures distances to a tenth of a light year and holds 7.0 of fuel.
@@ -276,8 +304,52 @@ fun eliteTradeAdvice(state: EliteState, includeIllegal: Boolean, maxOptions: Int
             .maxByOrNull { it.profitAverage }
     }.sortedByDescending { it.profitAverage }.take(maxOptions)
 
-    return TradeAdvice(here, range, cash, tonnesFree, sell, buy)
+    val tradingFloat = (buy.firstOrNull()?.price ?: 0).toLong() * state.cargoBay + 140
+    return TradeAdvice(here, range, cash, tonnesFree, sell, buy, eliteEquipmentAdvice(state), tradingFloat)
 }
+
+// ── Equipment advice ───────────────────────────────────────────────────────
+//
+// What a trader should fit next, in this order: cargo space first, then the
+// E.C.M. (one missile hit does 250 damage, a shield holds 255, and the E.C.M.
+// destroys every missile in flight), fuel scoops, the escape pod (which saves
+// the ship's equipment), a beam laser, then the luxuries. Prices are from
+// PRXS; the Equip Ship screen (EQSHP) lists item numbers up to tech level + 2
+// (internal tech level + 3), or all 14 from tech level 10.
+
+class EquipmentAdvice(
+    val name: String,
+    val price: Int,         // tenths of a credit
+    val menuNumber: Int,    // on the Equip Ship screen
+    val why: String,
+) {
+    /** The lowest tech level (as Elite shows it) that sells this. */
+    val techNeeded get() = if (menuNumber >= 12) 10 else maxOf(1, menuNumber - 2)
+}
+
+private const val POW = 15
+private const val BEAM = POW + 128
+private const val MILITARY = 128 + 23     // Armlas = INT(128.5 + 1.5 * POW)
+
+/** The next pieces of equipment to fit, best first. */
+fun eliteEquipmentAdvice(state: EliteState, maxItems: Int = 3): List<EquipmentAdvice> {
+    val front = state.frontLaser
+    return listOfNotNull(
+        EquipmentAdvice("LARGE CARGO BAY", 4000, 3, "35t instead of 20t: bigger loads").takeIf { state.cargoBay < 35 },
+        EquipmentAdvice("E.C.M. SYSTEM", 6000, 4, "Destroys missiles, the main danger").takeIf { !state.ecm },
+        EquipmentAdvice("FUEL SCOOPS", 5250, 7, "Free fuel from suns; scoop cargo").takeIf { !state.fuelScoops },
+        EquipmentAdvice("ESCAPE POD", 10000, 8, "Keeps your ship's equipment if you eject").takeIf { !state.escapePod },
+        EquipmentAdvice("BEAM LASER (FRONT)", 10000, 6, "Hits far more often; the old laser is refunded")
+            .takeIf { front != BEAM && front != MILITARY },
+        EquipmentAdvice("MISSILES (${state.missiles}/4)", 300, 2, "30 Cr each, up to 4").takeIf { state.missiles < 4 },
+        EquipmentAdvice("DOCKING COMPUTER", 10000, 11, "Docks for you (press C)").takeIf { !state.dockingComputer },
+        EquipmentAdvice("EXTRA ENERGY UNIT", 15000, 10, "Recharges energy faster").takeIf { !state.energyUnit },
+        EquipmentAdvice("MILITARY LASER (FRONT)", 60000, 13, "Half as strong again as a beam laser")
+            .takeIf { front != MILITARY },
+        EquipmentAdvice("GALACTIC HYPERDRIVE", 50000, 12, "Jump to the next galaxy").takeIf { !state.galacticHyperdrive },
+    ).take(maxItems)
+}
+
 
 /** Tenths of a credit (or light year) as Elite prints them, e.g. 1234 → "123.4". */
 fun eliteTenths(v: Long): String = "${v / 10}.${abs(v % 10)}"
@@ -298,10 +370,19 @@ fun eliteName(name: String): String = name.lowercase().replaceFirstChar { it.upp
 // timings we watch its item counter QQ29 and press a key only once it has
 // stayed put, i.e. Elite is waiting.
 
-private const val QQ11 = 0x0087     // view type: 2 = Buy Cargo, 4 = Sell Cargo
+private const val QQ11 = 0x0087     // view type (TT66), as below
+private const val XX13 = 0x0089     // Equip Ship: item being listed
 private const val QQ29 = 0x03AD     // item being asked about
+private const val NA_NAME = 0x1181  // NA%: last saved commander's name, CR-terminated
+private const val VIEW_MENU = 1     // disc access menu (and other text screens)
 private const val VIEW_BUY = 2
 private const val VIEW_SELL = 4
+private const val VIEW_STATUS = 8   // docking bay (BAY) and Inventory
+private const val VIEW_EQUIP = 32
+
+/** On a screen that is waiting for an answer, where our keys would go astray. */
+private fun busyScreen(view: Int) = view == VIEW_BUY || view == VIEW_SELL || view == VIEW_EQUIP
+private val BUSY = EliteTradeResult(false, "Finish the screen Elite is on first (or press f8).")
 
 private const val KEY_HOLD_MS = 150L        // long enough for Elite's key scan
 private const val DIGIT_GAP_MS = 500L       // between the digits of a quantity
@@ -327,12 +408,12 @@ private class EliteKeys(
         return true
     }
 
-    /** The item Elite is waiting on: QQ29 unchanged for SETTLED_MS. */
-    suspend fun settledItem(timeoutMs: Long): Int? {
-        var last = byte(QQ29); var still = 0L; var t = 0L
+    /** The item Elite is waiting on: [addr] (QQ29) unchanged for SETTLED_MS. */
+    suspend fun settledItem(timeoutMs: Long, addr: Int = QQ29): Int? {
+        var last = byte(addr); var still = 0L; var t = 0L
         while (t < timeoutMs) {
             kotlinx.coroutines.delay(POLL_MS); t += POLL_MS
-            val now = byte(QQ29)
+            val now = byte(addr)
             if (now == last) { still += POLL_MS; if (still >= SETTLED_MS) return now } else { last = now; still = 0 }
         }
         return null
@@ -378,8 +459,7 @@ suspend fun eliteBuy(
     val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
     if (!state.docked) return EliteTradeResult(false, "Dock at a station to buy.")
     val keys = EliteKeys(read, press)
-    if (keys.byte(QQ11) == VIEW_BUY || keys.byte(QQ11) == VIEW_SELL)
-        return EliteTradeResult(false, "Finish the Buy or Sell Cargo screen first.")
+    if (busyScreen(keys.byte(QQ11))) return BUSY
 
     // tnpr and LCASH: what Elite will accept now.
     val price = elitePrice(goods, state.economy, state.marketRandom)
@@ -443,8 +523,7 @@ suspend fun eliteSell(
     val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
     if (!state.docked) return EliteTradeResult(false, "Dock at a station to sell.")
     val keys = EliteKeys(read, press)
-    if (keys.byte(QQ11) == VIEW_BUY || keys.byte(QQ11) == VIEW_SELL)
-        return EliteTradeResult(false, "Finish the Buy or Sell Cargo screen first.")
+    if (busyScreen(keys.byte(QQ11))) return BUSY
     val toSell = items.filter { state.hold[it] > 0 }.toSet()
     if (toSell.isEmpty()) return EliteTradeResult(false, "Nothing to sell.")
 
@@ -482,4 +561,107 @@ suspend fun eliteSell(
         refused -> EliteTradeResult(false, "Sold ${sold.joinToString()}$earned, but not everything.")
         else -> EliteTradeResult(true, "Sold ${sold.joinToString()}$earned.")
     }
+}
+
+/**
+ * Fills the tank at the docked station through Equip Ship (EQSHP): f3, item 1
+ * (fuel, 2 Cr per light year) and RETURN, then RETURN at the next "ITEM?" to
+ * leave for the docking bay. Elite lists the equipment before asking, and
+ * after a purchase beeps, pauses and lists it again, so we wait for the item
+ * being listed (XX13) to stay put before each key.
+ */
+suspend fun eliteRefuel(
+    read: (addr: Int, len: Int) -> ByteArray?,
+    press: suspend (label: String, holdMs: Long) -> Unit,
+    onProgress: (String) -> Unit = {},
+): EliteTradeResult {
+    val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
+    if (!state.docked) return EliteTradeResult(false, "Dock at a station to refuel.")
+    if (state.fuel >= 70) return EliteTradeResult(true, "Tank already full.")
+    val cost = (70 - state.fuel) * 2L
+    if (state.cash < cost) return EliteTradeResult(false, "Not enough cash for fuel (${eliteTenths(cost)} CR).")
+    val keys = EliteKeys(read, press)
+    if (busyScreen(keys.byte(QQ11))) return BUSY
+
+    onProgress("Opening Equip Ship…")
+    if (!keys.open("f3", VIEW_EQUIP)) return EliteTradeResult(false, "The Equip Ship screen didn't open. Try again.")
+    val listed = keys.settledItem(4000, XX13) ?: return STOPPED
+    onProgress("Buying fuel…")
+    keys.enter(1)
+    if (!keys.waitFor(3000) { keys.byte(QQ14) == 70 }) return EliteTradeResult(false, "Elite didn't sell the fuel. Check the screen.")
+    // Elite beeps, pauses and lists the equipment again; then leave with RETURN.
+    keys.waitFor(3000) { keys.byte(XX13) != listed }
+    keys.settledItem(4000, XX13) ?: return STOPPED
+    repeat(2) {
+        if (keys.byte(QQ11) == VIEW_EQUIP) {
+            keys.skip()
+            keys.waitFor(2000) { keys.byte(QQ11) != VIEW_EQUIP }
+        }
+    }
+    return EliteTradeResult(true, "Refuelled to 7.0 LY for ${eliteTenths(cost)} CR.")
+}
+
+/** Sells everything in the hold (eliteSell), then fills the tank (eliteRefuel). */
+suspend fun eliteSellAllAndRefuel(
+    read: (addr: Int, len: Int) -> ByteArray?,
+    press: suspend (label: String, holdMs: Long) -> Unit,
+    onProgress: (String) -> Unit = {},
+): EliteTradeResult {
+    val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
+    val held = (0 until 17).filter { state.hold[it] > 0 }.toSet()
+    var sold: EliteTradeResult? = null
+    if (held.isNotEmpty()) {
+        sold = eliteSell(held, read, press, onProgress)
+        if (!sold.ok) return sold
+        kotlinx.coroutines.delay(800)        // let Elite draw the Inventory screen
+    }
+    val fuel = eliteRefuel(read, press, onProgress)
+    return EliteTradeResult(fuel.ok, listOfNotNull(sold?.message, fuel.message).joinToString(" "))
+}
+
+/** The current commander's name (NA%), or null if it doesn't look like one. */
+fun eliteCommanderName(read: (addr: Int, len: Int) -> ByteArray?): String? {
+    val bytes = read(NA_NAME, 8) ?: return null
+    val end = bytes.indexOf(13.toByte())
+    if (end !in 1..7) return null
+    val name = String(ByteArray(end) { bytes[it] }, Charsets.US_ASCII)
+    return name.takeIf { n -> n.all { it in '!'..'{' } }
+}
+
+/**
+ * Saves the commander to its own file: @ for the disc access menu (SVE),
+ * 2 for Save Commander, then RETURN at "COMMANDER'S NAME?", which keeps the
+ * name of the commander last loaded or saved (GTNME, TR1). Elite then goes to
+ * the docking bay; on a disc error it shows the error and the menu again.
+ * The app copies the changed disc back to the .ssd file (MainActivity).
+ */
+suspend fun eliteSaveCommander(
+    read: (addr: Int, len: Int) -> ByteArray?,
+    press: suspend (label: String, holdMs: Long) -> Unit,
+    onProgress: (String) -> Unit = {},
+): EliteTradeResult {
+    val state = readEliteState(read) ?: return EliteTradeResult(false, "No Elite commander found.")
+    if (!state.docked) return EliteTradeResult(false, "Elite saves only when docked.")
+    val keys = EliteKeys(read, press)
+    if (busyScreen(keys.byte(QQ11))) return BUSY
+    val name = eliteCommanderName(read)
+
+    val who = name?.let { "commander $it" } ?: "your commander"
+
+    // Other text screens (Data on System, ...) share the disc menu's view type,
+    // so start from the docking bay to see the menu open.
+    if (keys.byte(QQ11) == VIEW_MENU) {
+        press("f8", KEY_HOLD_MS)
+        if (!keys.waitFor(3000) { keys.byte(QQ11) == VIEW_STATUS }) return STOPPED
+        kotlinx.coroutines.delay(500)
+    }
+    onProgress("Opening the disc menu…")
+    if (!keys.open("@", VIEW_MENU)) return EliteTradeResult(false, "The disc menu didn't open. Try again.")
+    press("2", KEY_HOLD_MS)
+    kotlinx.coroutines.delay(1000)          // GTNMEW pauses, then asks for the name
+    onProgress("Saving $who…")
+    keys.skip()
+    return if (keys.waitFor(12000) { keys.byte(QQ11) == VIEW_STATUS })
+        EliteTradeResult(true, "Saved $who.")
+    else EliteTradeResult(false, "The save didn't finish. Check Elite's message (e.g. Disc read only).")
 }
