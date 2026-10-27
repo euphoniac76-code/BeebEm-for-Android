@@ -34,9 +34,10 @@ private const val BUCKET = 20          // object number; sprite &09 empty, &0A f
 private const val FULL_BUCKET = 0x0A
 
 /**
- * Exits the drawings allow but the room's enemies don't: touching them hurts,
- * and enough hurt sends the player back to where they came in. [unless] is a
- * condition that clears the way (0: never).
+ * Exits the drawings allow but that don't get the player anywhere: enemies
+ * that hurt enough send the player back to where they came in, and some lead
+ * only to a dead end of the next room. [unless] is a condition that clears the
+ * way (0: never).
  */
 private class Blocked(val room: Int, val edge: Char, val from: Int, val to: Int, val unless: Int)
 
@@ -45,7 +46,9 @@ private val BLOCKED = listOf(
     // bucket puts them all out (until the player leaves the room).
     Blocked(0x5D, 'U', 0, 10, COND_BUCKET),
     Blocked(0x49, 'D', 0, 10, COND_BUCKET),
-    // The monk on the Central Tower floor turns the player back.
+    // Along the castle floor through the Central Tower (shoot the monk with a
+    // jumping SPACE first) the player reaches the switch room, but only the part
+    // left of the brick block; the switch is in its far side, reached from above.
     Blocked(0x47, 'R', 0, 40, 0),
     Blocked(0x48, 'L', 0, 40, 0),
 )
