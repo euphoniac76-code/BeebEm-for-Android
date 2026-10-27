@@ -523,7 +523,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
                     }
                     HorizontalDivider(color = Color(0xFF1E1E30))
                     MenuButton("Save Snapshot") {
-                        val path = StateManager.generatePath(context)
+                        val path = StateManager.generatePath(context, StateManager.gameName(disc0LocalFile))
                         BeebEmNative.nativeSaveState(path)
                         showMenu = false
                     }
@@ -655,6 +655,7 @@ private fun EmulatorLayout(onViewCreated: (BeebGLSurfaceView) -> Unit) {
             ) {
                 StatePickerScreen(
                     states   = savedStates,
+                    currentGame = StateManager.gameName(disc0LocalFile),
                     onLoad   = { file ->
                         BeebEmNative.nativeLoadState(file.absolutePath)
                         showStatePicker = false
