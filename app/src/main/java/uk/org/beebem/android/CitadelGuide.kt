@@ -20,6 +20,8 @@ class CitadelState(
     val room: Int,                  // player_room (&37): row * 20 + column
     val x: Int,                     // room co-ordinates relative to the Main Hall,
     val y: Int,                     //   as the game shows them (room_x, room_y)
+    val entryX: Int,                // where the player came into this room
+    val entryY: Int,                //   (player_entry_x/y, pixels)
     val score: Int,                 // 0-99 (BCD at &3E)
     val energy: Int,
     val pockets: IntArray,          // object numbers in the two pockets
@@ -28,7 +30,7 @@ class CitadelState(
     val energyCollected: BooleanArray,  // 16 flasks
     val switches: IntArray,         // right of Central Tower, The Well Wheel
     val crystalsInSanctuary: BooleanArray,  // by crystal 0-4
-    val cannonLoaded: Int,          // 0-2: cannonball and gunpowder added
+    val cannonLoaded: Int,          // 0-2: cannonball and gunpowder added; &9B once fired
     val guardianFed: Boolean,
     val bonesNeeded: Int,           // 3 at start; &FF once the witch is dead
     val starPortDestroyed: Boolean,
@@ -51,6 +53,7 @@ private const val SCORE = 0x3E
 private const val POCKETS = 0x2E
 private const val ENERGY = 0x96         // low byte BCD, then hundreds
 private const val ROOM_XY = 0x012D
+private const val PLAYER_ENTRY = 0x0124
 private const val OBJECT_ROOM = 0x0380
 private const val OBJECT_SPRITE = 0x03A8
 private const val ENERGY_COLLECTED = 0x04F0
@@ -81,6 +84,7 @@ fun readCitadelState(read: (addr: Int, len: Int) -> ByteArray?): CitadelState? {
     fun bytes(addr: Int, n: Int): IntArray? = read(addr, n)?.let { b -> IntArray(n) { b[it].toInt() and 0xFF } }
     val zp = bytes(0, 0xA0) ?: return null
     val xy = bytes(ROOM_XY, 2) ?: return null
+    val entry = bytes(PLAYER_ENTRY, 2) ?: return null
     val objects = bytes(OBJECT_ROOM, 80) ?: return null
     val flasks = bytes(ENERGY_COLLECTED, 16) ?: return null
     val puzzles = bytes(PUZZLES, 11) ?: return null
@@ -92,7 +96,7 @@ fun readCitadelState(read: (addr: Int, len: Int) -> ByteArray?): CitadelState? {
     val x = bcd(xy[0]).let { if (it >= 50) it - 100 else it }
     val y = xy[1].toByte().toInt()
     return CitadelState(
-        room = room, x = x, y = y,
+        room = room, x = x, y = y, entryX = entry[0], entryY = entry[1],
         score = bcd(zp[SCORE]),
         energy = zp[ENERGY + 1] * 100 + bcd(zp[ENERGY]),
         pockets = intArrayOf(zp[POCKETS], zp[POCKETS + 1]),
@@ -359,8 +363,10 @@ class CitadelAdvice(
     val action: String,             // what to do now (may be "Fetch the ..." for a needed object)
     val targetRoom: Int?,
     val targetCoords: Pair<Int, Int>?,
-    val direction: String,          // e.g. "3 left, 1 down", or "This screen"
+    val direction: String,          // the next move on the best route, e.g. "Go left", or "On this screen"
     val arrow: String,
+    val nextRoom: Int?,             // the screen that move leads to
+    val screensToGo: Int?,          // screens along the route, null if the route isn't known
     val percent: Int,
     val flasksLeft: List<Int>,      // rooms with flasks still to collect
 )
@@ -372,7 +378,7 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
     val flasksLeft = FLASK_ROOMS.indices.filter { !s.energyCollected[it] }.map { FLASK_ROOMS[it] }
     val index = route.indexOfFirst { !it.done(s) }
     if (index < 0) return CitadelAdvice(null, route.size, "Teleport destroyed: well done!", null, null, "", "★",
-        100, flasksLeft)
+        null, null, 100, flasksLeft)
     val step = route[index]
 
     // An object to fetch first (wherever the player left it), else the step's own room.
@@ -392,27 +398,43 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
     val coords = target?.let { citadelCoords(it) }
     var direction = ""
     var arrow = ""
+    var nextRoom: Int? = null
+    var screens: Int? = null
     if (target != null && coords != null) {
-        val targetOnPlanet = target in CITADEL_PLANET
-        if (targetOnPlanet == s.onPlanet) {
-            val dx = coords.first - s.x
-            val dy = coords.second - s.y
-            if (target == s.room || (dx == 0 && dy == 0)) {
-                direction = "On this screen"; arrow = "●"
-            } else {
+        val conds = citadelMapConditions(s)
+        val port = citadelEntryPort(s.room, s.entryX, s.entryY, conds)
+        val path = citadelRoute(s.room, port, target, conds)
+            ?: if (port >= 0) citadelRoute(s.room, -1, target, conds) else null
+        when {
+            target == s.room -> { direction = "On this screen"; arrow = "●" }
+            path != null && path.isNotEmpty() -> {
+                val move = path.first()
+                direction = move.hint ?: WAY_TEXT[move.way] ?: "Go on"
+                arrow = WAY_ARROW[move.way] ?: "✦"
+                nextRoom = move.next.takeIf { it != s.room }
+                screens = path.count { it.next != it.room }
+            }
+            (target in CITADEL_PLANET) != s.onPlanet -> {
+                direction = if (target in CITADEL_PLANET) "Teleport from the Star Port (13,2)" else "Teleport back from the Star Port (0,0)"
+                arrow = "✦"
+            }
+            else -> {
+                // No known route (a puzzle still to solve on the way): point at it.
+                val dx = coords.first - s.x
+                val dy = coords.second - s.y
                 direction = listOfNotNull(
                     if (dx < 0) "${-dx} left" else if (dx > 0) "$dx right" else null,
                     if (dy > 0) "$dy up" else if (dy < 0) "${-dy} down" else null,
-                ).joinToString(", ")
+                ).joinToString(", ").ifEmpty { "Nearby" }
                 arrow = arrowFor(dx, dy)
             }
-        } else {
-            direction = if (targetOnPlanet) "Teleport from the Star Port (13,2)" else "Teleport back from the Star Port (0,0)"
-            arrow = "✦"
         }
     }
-    return CitadelAdvice(step, index + 1, action, target, coords, direction, arrow, percent, flasksLeft)
+    return CitadelAdvice(step, index + 1, action, target, coords, direction, arrow, nextRoom, screens, percent, flasksLeft)
 }
+
+private val WAY_TEXT = mapOf('L' to "Go left", 'R' to "Go right", 'U' to "Go up", 'D' to "Go down")
+private val WAY_ARROW = mapOf('L' to "←", 'R' to "→", 'U' to "↑", 'D' to "↓", 'J' to "↑", 'H' to "↓", 'T' to "✦")
 
 private fun arrowFor(dx: Int, dy: Int): String {
     // Mostly sideways or mostly vertical gets a straight arrow.

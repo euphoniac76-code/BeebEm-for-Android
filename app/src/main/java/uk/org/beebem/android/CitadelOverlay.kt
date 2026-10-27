@@ -25,8 +25,8 @@ import kotlinx.coroutines.delay
 // ── Citadel guide overlay ──────────────────────────────────────────────────
 //
 // Shows citadelAdvice (CitadelGuide.kt) for the game in BBC memory, re-read
-// twice a second: the next objective, which way to go from this screen, and
-// how far through the route the player is. It sits in the black band beside
+// twice a second: the next objective, the next move on the best route to it
+// from this screen, and how far through the route the player is. It sits in the black band beside
 // the picture, as a narrow column on a 16:9 screen (about 90 dp), else in the
 // top corner; tapping its title folds it down to the essentials.
 
@@ -53,7 +53,7 @@ fun CitadelOverlay(pictureWidthFraction: Float, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier) {
         val side = maxWidth * ((1f - pictureWidthFraction) / 2f) - 6.dp
         val inBand = side >= 72.dp
-        val width = if (inBand) min(side, 260.dp) else 260.dp
+        val width = if (inBand) min(side, 200.dp) else 210.dp
         val panel = if (inBand)
             Modifier.align(Alignment.CenterEnd).padding(end = 3.dp).width(width).heightIn(max = maxHeight - 8.dp)
         else
@@ -99,38 +99,26 @@ private fun CitadelPanel(
 
 @Composable
 private fun CitadelDetails(s: CitadelState, a: CitadelAdvice, expanded: Boolean, compact: Boolean) {
-    if (expanded) CitText("STEP ${a.stepNumber} OF ${CITADEL_ROUTE.size}", CIT_CYAN.copy(alpha = 0.8f), 8)
-    CitText(a.action, Color.White, if (compact) 9 else 11, bold = true)
+    CitText(a.action, Color.White, if (compact) 9 else 10, bold = true)
     if (a.direction.isNotEmpty()) {
-        val room = a.targetRoom
-        val xy = a.targetCoords
-        val place = if (room != null && xy != null)
-            "${citadelRoomName(room)} (${citadelCoordText(xy.first, xy.second)})" else null
-        if (compact) {
-            // Narrow column: arrow on its own, then the rest underneath.
-            CitText(a.arrow, CIT_YELLOW, 26, bold = true)
-            CitText(a.direction, CIT_YELLOW, 10, bold = true)
-            place?.let { CitText(it, CIT_CYAN, 8) }
-        } else {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CitText(a.arrow, CIT_YELLOW, 22, bold = true)
-                Column {
-                    CitText(a.direction, CIT_YELLOW, 10, bold = true)
-                    place?.let { CitText(it, CIT_CYAN, 9) }
-                }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            CitText(a.arrow, CIT_YELLOW, if (compact) 16 else 18, bold = true)
+            Column {
+                CitText(a.direction, CIT_YELLOW, if (compact) 8 else 9, bold = true)
+                a.nextRoom?.let { CitText("to ${citadelRoomName(it)}", CIT_CYAN, if (compact) 7 else 8) }
             }
         }
     }
     if (!expanded) return
+    val room = a.targetRoom
+    val xy = a.targetCoords
+    if (room != null && xy != null && room != s.room && room != a.nextRoom) {
+        val away = a.screensToGo?.let { " · $it screen" + if (it == 1) "" else "s" }.orEmpty()
+        CitText("Goal: ${citadelRoomName(room)} (${citadelCoordText(xy.first, xy.second)})$away", CIT_CYAN.copy(alpha = 0.8f), 7)
+    }
     val tip = a.step?.tip.orEmpty()
-    if (tip.isNotEmpty()) CitText(tip, Color.White.copy(alpha = 0.75f), if (compact) 7 else 8)
-    CitText("You: ${citadelRoomName(s.room)} (${citadelCoordText(s.x, s.y)})", CIT_MAGENTA, if (compact) 7 else 8)
-    val stats = listOf("Score ${s.score}", "Crystals ${s.crystalsPlaced}/5", "Crowns ${s.crownsTaken}/3")
-    if (compact) stats.forEach { CitText(it, CIT_GREEN, 7) }
-    else CitText(stats.joinToString(" · "), CIT_GREEN, 8)
-    // 99 points shows the game's hidden completion message; flasks are 2 each.
-    if (s.score < 99) CitText("Flasks left ${a.flasksLeft.size}/16 · 99 points unlocks the secret ending",
-        Color.White.copy(alpha = 0.55f), 7)
+    if (tip.isNotEmpty()) CitText(tip, Color.White.copy(alpha = 0.7f), 7)
+    CitText("Crystals ${s.crystalsPlaced}/5 · crowns ${s.crownsTaken}/3", CIT_GREEN.copy(alpha = 0.8f), 7)
 }
 
 @Composable
