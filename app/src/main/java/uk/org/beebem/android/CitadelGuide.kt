@@ -436,7 +436,7 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
 
 // Exits that don't look like exits: room, way and where (as CitadelMove gives them).
 private val EXIT_HINTS = mapOf(
-    "5DU on the left" to "Jump at the striped pillar on the left, hold UP and climb it",
+    "5DU on the left" to "Wait for the fires to move off, jump at the striped pillar on the left and hold UP",
 )
 
 private val WAY_TEXT = mapOf('L' to "Go left", 'R' to "Go right", 'U' to "Go up", 'D' to "Go down")
