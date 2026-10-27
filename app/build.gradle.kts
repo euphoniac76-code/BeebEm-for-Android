@@ -13,9 +13,11 @@ android {
         targetSdk = 36
         // CI builds number themselves from the workflow run, so each one is a
         // newer version than the last (used by the GitHub release and Obtainium).
+        // The name matches the release tag (v0.2.N) exactly, so Obtainium can
+        // read the installed version rather than trusting its own record.
         val ciBuild = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
         versionCode = 2 + (ciBuild ?: 0)
-        versionName = if (ciBuild != null) "0.2.$ciBuild-gamepad" else "0.2.0-gamepad"
+        versionName = "0.2.${ciBuild ?: 0}"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         externalNativeBuild {
             cmake { cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti") }
