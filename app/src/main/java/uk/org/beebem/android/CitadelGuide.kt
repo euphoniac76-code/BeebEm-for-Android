@@ -436,7 +436,13 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
 
 // Exits that don't look like exits: room, way and where (as CitadelMove gives them).
 private val EXIT_HINTS = mapOf(
-    "5DU on the left" to "Wait for the fires to move off, jump at the striped pillar on the left and hold UP",
+    // Only with a full bucket: touching a fire with it puts them all out.
+    "5DU on the left" to "Touch a fire with the full bucket, then jump at the striped pillar on the left and hold UP",
+    // The way to the castle-top switch, as the published solution does it.
+    "22L " to "Run off the left of the tower top, holding LEFT",
+    "21D " to "Keep LEFT held as you fall",
+    "35D " to "Keep LEFT held; press ESCAPE as Top of Castle appears",
+    "49L " to "Land on the blue wall, then go left",
 )
 
 private val WAY_TEXT = mapOf('L' to "Go left", 'R' to "Go right", 'U' to "Go up", 'D' to "Go down")

@@ -28,6 +28,27 @@ private class Drawing(val conds: IntArray, val ports: List<Span>, val exits: Map
 private const val COND_WELL = 9
 private const val COND_CANNON = 10
 private const val COND_CRYSTALS = 11
+private const val COND_BUCKET = 12     // carrying the full bucket
+
+private const val BUCKET = 20          // object number; sprite &09 empty, &0A full
+private const val FULL_BUCKET = 0x0A
+
+/**
+ * Exits the drawings allow but the room's enemies don't: touching them hurts,
+ * and enough hurt sends the player back to where they came in. [unless] is a
+ * condition that clears the way (0: never).
+ */
+private class Blocked(val room: Int, val edge: Char, val from: Int, val to: Int, val unless: Int)
+
+private val BLOCKED = listOf(
+    // Three fires patrol under the climbable pillar in the East Fireplace; a full
+    // bucket puts them all out (until the player leaves the room).
+    Blocked(0x5D, 'U', 0, 10, COND_BUCKET),
+    Blocked(0x49, 'D', 0, 10, COND_BUCKET),
+    // The monk on the Central Tower floor turns the player back.
+    Blocked(0x47, 'R', 0, 40, 0),
+    Blocked(0x48, 'L', 0, 40, 0),
+)
 
 private class Special(val from: Int, val to: Int, val way: Char, val cond: Int, val hint: String?)
 
@@ -87,6 +108,7 @@ fun citadelMapConditions(s: CitadelState): Set<Int> = buildSet {
     if (s.switches[1] != 0) add(COND_WELL)
     if (s.cannonLoaded >= 0x80) add(COND_CANNON)
     if (s.crystalsPlaced == 5) add(COND_CRYSTALS)
+    if (s.carrying(BUCKET) && s.objectSprite[BUCKET] == FULL_BUCKET) add(COND_BUCKET)
 }
 
 /**
@@ -129,6 +151,8 @@ private fun moves(room: Int, port: Int, conds: Set<Int>): List<Edge> {
     for (e in here.exits[port] ?: here.exits[-1].orEmpty()) {
         val n = neighbour(room, e.edge) ?: continue
         if ((n in CITADEL_PLANET) != onPlanet) continue
+        if (BLOCKED.any { b -> b.room == room && b.edge == e.edge && b.from <= e.to && e.from <= b.to &&
+                (b.unless == 0 || b.unless !in conds) }) continue
         val there = drawing(n, conds)
         if (there == null) {
             // Empty space: only worth jumping up into, to come down further along.
