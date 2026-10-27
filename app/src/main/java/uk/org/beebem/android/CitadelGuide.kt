@@ -409,7 +409,8 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
             target == s.room -> { direction = "On this screen"; arrow = "●" }
             path != null && path.isNotEmpty() -> {
                 val move = path.first()
-                direction = move.hint ?: listOfNotNull(WAY_TEXT[move.way] ?: "Go on", move.where).joinToString(" ")
+                direction = move.hint ?: EXIT_HINTS["%02X%c %s".format(move.room, move.way, move.where.orEmpty())]
+                    ?: listOfNotNull(WAY_TEXT[move.way] ?: "Go on", move.where).joinToString(" ")
                 arrow = WAY_ARROW[move.way] ?: "✦"
                 nextRoom = move.next.takeIf { it != s.room }
                 screens = path.count { it.next != it.room }
@@ -432,6 +433,11 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
     }
     return CitadelAdvice(step, index + 1, action, target, coords, direction, arrow, nextRoom, screens, percent, flasksLeft)
 }
+
+// Exits that don't look like exits: room, way and where (as CitadelMove gives them).
+private val EXIT_HINTS = mapOf(
+    "5DU on the left" to "Jump at the striped pillar on the left, hold UP and climb it",
+)
 
 private val WAY_TEXT = mapOf('L' to "Go left", 'R' to "Go right", 'U' to "Go up", 'D' to "Go down")
 private val WAY_ARROW = mapOf('L' to "←", 'R' to "→", 'U' to "↑", 'D' to "↓", 'J' to "↑", 'H' to "↓", 'T' to "✦")
