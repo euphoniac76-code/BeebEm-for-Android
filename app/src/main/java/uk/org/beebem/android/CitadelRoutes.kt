@@ -13,8 +13,12 @@ import java.util.PriorityQueue
 // solved (doors, the Well Wheel draining the well, the cannon's hole), and a
 // few moves can't be seen in the drawings at all; those are added by hand.
 
-/** One step of a route: leave [room] by [way] (L R U D, or a special move) for [next]. */
-class CitadelMove(val room: Int, val way: Char, val next: Int, val hint: String?)
+/**
+ * One step of a route: leave [room] by [way] (L R U D, or a special move) for
+ * [next]. [where] says which exit on that side when there is more than one,
+ * e.g. "on the left" for a way up.
+ */
+class CitadelMove(val room: Int, val way: Char, val next: Int, val hint: String?, val where: String? = null)
 
 private class Span(val edge: Char, val from: Int, val to: Int)
 
@@ -104,6 +108,18 @@ fun citadelEntryPort(room: Int, entryX: Int, entryY: Int, conds: Set<Int>): Int 
     }?.takeIf { ports[it].edge == edge && maxOf(0, ports[it].from - at, at - ports[it].to) <= 2 } ?: -1
 }
 
+/** Where along a side an exit is: across for up and down (byte column 0-75), else height (block row 0-40). */
+private fun whereOnEdge(edge: Char, at: Int): String =
+    if (edge == 'U' || edge == 'D') when {
+        at < 25 -> "on the left"
+        at > 50 -> "on the right"
+        else -> "in the middle"
+    } else when {
+        at < 14 -> "at the top"
+        at > 27 -> "at the bottom"
+        else -> "halfway up"
+    }
+
 private class Edge(val cost: Int, val move: CitadelMove, val nextPort: Int)
 
 private fun moves(room: Int, port: Int, conds: Set<Int>): List<Edge> {
@@ -124,9 +140,12 @@ private fun moves(room: Int, port: Int, conds: Set<Int>): List<Edge> {
             continue
         }
         val want = OPPOSITE.getValue(e.edge)
+        val several = here.ports.count { it.edge == e.edge } > 1
         there.ports.forEachIndexed { q, p ->
-            if (p.edge == want && p.from <= e.to && e.from <= p.to)
-                out.add(Edge(if (e.edge == 'U') 2 else 1, CitadelMove(room, e.edge, n, null), q))
+            if (p.edge == want && p.from <= e.to && e.from <= p.to) {
+                val where = if (several) whereOnEdge(e.edge, (maxOf(e.from, p.from) + minOf(e.to, p.to)) / 2) else null
+                out.add(Edge(if (e.edge == 'U') 2 else 1, CitadelMove(room, e.edge, n, null, where), q))
+            }
         }
     }
     for (sp in SPECIALS) if (sp.from == room && (sp.cond == 0 || sp.cond in conds))

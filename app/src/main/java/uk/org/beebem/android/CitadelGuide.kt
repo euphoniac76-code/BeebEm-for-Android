@@ -409,7 +409,7 @@ fun citadelAdvice(s: CitadelState): CitadelAdvice {
             target == s.room -> { direction = "On this screen"; arrow = "●" }
             path != null && path.isNotEmpty() -> {
                 val move = path.first()
-                direction = move.hint ?: WAY_TEXT[move.way] ?: "Go on"
+                direction = move.hint ?: listOfNotNull(WAY_TEXT[move.way] ?: "Go on", move.where).joinToString(" ")
                 arrow = WAY_ARROW[move.way] ?: "✦"
                 nextRoom = move.next.takeIf { it != s.room }
                 screens = path.count { it.next != it.room }
