@@ -305,7 +305,10 @@ private fun TradePanel(
             delay(1000)
         }
     }
-    val advice = remember(state, includeIllegal) { state?.let { eliteTradeAdvice(it, includeIllegal) } }
+    // On Data on System for another system, the advice is for a trip there.
+    val advice = remember(state, includeIllegal) {
+        state?.let { eliteTradeAdvice(it, includeIllegal, destination = eliteChosenDestination(it)) }
+    }
     val shape = CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp)
 
     Column(
@@ -340,6 +343,21 @@ private fun TradeAdviceBody(
     val here = advice.here
     TradeText("${eliteName(here.name)} · ${ELITE_ECONOMIES[here.economy]} · ${ELITE_GOVERNMENTS[here.government]}",
         ELITE_CYAN, 10, bold = true)
+    val trip = advice.destination
+    if (trip != null) {
+        Row {
+            TradeText("TRIP TO ${eliteName(trip.name).uppercase()} · ${eliteTenths(advice.destinationDistance)} LY · " +
+                "${ELITE_ECONOMIES[trip.economy]} · ${ELITE_GOVERNMENTS[trip.government]}", ELITE_YELLOW, 10, bold = true,
+                modifier = Modifier.weight(1f, fill = false))
+            if (trip.dangerous) TradeText(" ⚠ DANGER", ELITE_RED, 9, bold = true)
+        }
+        if (advice.destinationDistance > advice.range) {
+            TradeText("Out of range: your ${if (st.docked) "full tank" else "fuel"} reaches ${eliteTenths(advice.range)} LY.",
+                ELITE_RED, 9, bold = true)
+        }
+        TradeText("From Data on System. Leave that screen for every destination in range.",
+            Color.White.copy(alpha = 0.6f), 8)
+    }
     val held = (0..12).sumOf { st.hold[it] }
     TradeText("CASH ${eliteTenths(st.cash)} CR · HOLD ${held}/${st.cargoBay}t · FUEL ${eliteTenths(st.fuel)} LY",
         Color.White, 9)
@@ -378,11 +396,15 @@ private fun TradeAdviceBody(
         }
     }
 
-    TradeHeading(if (advice.sell.any { it.sellHere }) "BEST BUYS (AFTER SELLING)" else "BEST BUYS")
+    val buys = if (trip != null) "BUYS FOR ${eliteName(trip.name).uppercase()}" else "BEST BUYS"
+    TradeHeading(if (advice.sell.any { it.sellHere }) "$buys (AFTER SELLING)" else buys)
     if (advice.buy.isEmpty()) {
         TradeText(
-            if (advice.tonnesFree == 0 && advice.cash > 0) "Your hold is full."
-            else "No profitable trade within ${eliteTenths(advice.range)} light years.",
+            when {
+                advice.tonnesFree == 0 && advice.cash > 0 -> "Your hold is full."
+                trip != null -> "Nothing here sells for more at ${eliteName(trip.name)}."
+                else -> "No profitable trade within ${eliteTenths(advice.range)} light years."
+            },
             Color.White, 10)
     }
     advice.buy.forEachIndexed { i, b ->
@@ -422,8 +444,11 @@ private fun TradeAdviceBody(
 @Composable
 private fun PlansSection(st: EliteState, advice: TradeAdvice, onBuy: (BuyAdvice) -> Unit, buying: Boolean) {
     if (advice.plans.isEmpty()) return
-    TradeHeading("TWO-STOP PLANS")
-    TradeText("Ranked by the expected profit of both loads together. The first stop's prices are set when you arrive.",
+    val trip = advice.destination
+    TradeHeading(if (trip != null) "AND ONWARD FROM ${eliteName(trip.name).uppercase()}" else "TWO-STOP PLANS")
+    TradeText(
+        if (trip != null) "The best load there, whose prices are set when you arrive, and where to take it."
+        else "Ranked by the expected profit of both loads together. The first stop's prices are set when you arrive.",
         Color.White.copy(alpha = 0.6f), 8)
     advice.plans.forEachIndexed { i, plan ->
         val via = plan.via

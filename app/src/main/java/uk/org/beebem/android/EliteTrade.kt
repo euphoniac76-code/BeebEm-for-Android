@@ -142,6 +142,9 @@ class EliteState(
     val galacticHyperdrive: Boolean,
     val escapePod: Boolean,
     val missiles: Int,
+    val view: Int,              // QQ11: what's on screen (1 = Data on System, among others)
+    val selectedX: Int,         // QQ9/QQ10: the system chosen on the charts,
+    val selectedY: Int,         //   the one Data on System describes
 )
 
 // Addresses in disc Elite (the same in the docked and flight code).
@@ -162,6 +165,8 @@ private const val AVL = 0x038D      // availability, 17 bytes
 private const val QQ26 = 0x039E     // market random byte
 private const val QQ28 = 0x03AC     // economy
 private const val WORKSPACE_END = 0x03B8
+private const val QQ9 = 0x03C1      // chosen system's galactic x, then QQ10 y
+private const val VIEW_DATA = 1     // Data on System (also the disc menu and other text screens)
 
 /**
  * The commander's state from BBC memory, or null if it doesn't look like disc
@@ -170,6 +175,8 @@ private const val WORKSPACE_END = 0x03B8
 fun readEliteState(read: (addr: Int, len: Int) -> ByteArray?): EliteState? {
     val zp = read(QQ12, 1) ?: return null
     val ws = read(WORKSPACE, WORKSPACE_END - WORKSPACE) ?: return null
+    val view = read(QQ11, 1) ?: return null
+    val chosen = read(QQ9, 2) ?: return null
     fun b(addr: Int) = ws[addr - WORKSPACE].toInt() and 0xFF
     fun bytes(addr: Int, n: Int) = IntArray(n) { b(addr + it) }
 
@@ -202,6 +209,9 @@ fun readEliteState(read: (addr: Int, len: Int) -> ByteArray?): EliteState? {
         galacticHyperdrive = b(ECM + 5) != 0,
         escapePod = b(ECM + 6) != 0,
         missiles = b(NOMSL),
+        view = view[0].toInt() and 0xFF,
+        selectedX = chosen[0].toInt() and 0xFF,
+        selectedY = chosen[1].toInt() and 0xFF,
     )
     // The seeds must generate a system where we are, with the economy Elite
     // says this system has.
@@ -288,6 +298,8 @@ class TwoStopPlan(
 
 class TradeAdvice(
     val here: EliteSystem,
+    val destination: EliteSystem?,  // set when advising one trip (from Data on System)
+    val destinationDistance: Int,   // tenths of a light year, 0 without a destination
     val range: Int,                 // tenths of a light year
     val cash: Long,                 // after the recommended sales
     val tonnesFree: Int,            // after the recommended sales
@@ -304,16 +316,34 @@ class TradeAdvice(
 private const val FULL_TANK = 70
 
 /**
+ * The system the commander is looking at on Data on System, if it isn't the
+ * one they're at: the trade advice is then for a trip there.
+ */
+fun eliteChosenDestination(state: EliteState): EliteSystem? {
+    if (state.view != VIEW_DATA) return null
+    // Data on System snaps QQ9/QQ10 to the nearest system (TT111); match it the same way.
+    val chosen = eliteGalaxy(state.galaxySeeds)
+        .minByOrNull { eliteDistance(state.selectedX, state.selectedY, it.x, it.y) } ?: return null
+    return chosen.takeIf { it.x != state.x || it.y != state.y }
+}
+
+/**
  * Trade advice for the commander. Docked, the range assumes a full tank (fuel
  * is on sale here); in flight it is the fuel left. Cargo in the hold is
  * recommended for sale here unless some system in range pays more on average,
- * and the purchases assume those sales have been made.
+ * and the purchases assume those sales have been made. With a [destination],
+ * everything is for a trip there (even if it is out of range): what to sell
+ * here or carry, what to buy for it, and the best load onward from it.
  */
-fun eliteTradeAdvice(state: EliteState, includeIllegal: Boolean, maxOptions: Int = 3): TradeAdvice? {
+fun eliteTradeAdvice(
+    state: EliteState, includeIllegal: Boolean, maxOptions: Int = 3, destination: EliteSystem? = null,
+): TradeAdvice? {
     val galaxy = eliteGalaxy(state.galaxySeeds)
     val here = galaxy.firstOrNull { it.x == state.x && it.y == state.y } ?: return null
     val range = if (state.docked) FULL_TANK else state.fuel
-    val reachable = galaxy.mapNotNull { sys ->
+    val dest = destination?.let { d -> galaxy.firstOrNull { it.index == d.index } }?.takeIf { it !== here }
+    val destDistance = dest?.let { eliteDistance(here.x, here.y, it.x, it.y) } ?: 0
+    val reachable = if (dest != null) listOf(dest to destDistance) else galaxy.mapNotNull { sys ->
         val d = eliteDistance(here.x, here.y, sys.x, sys.y)
         if (sys !== here && d in 1..range) sys to d else null
     }
@@ -362,7 +392,8 @@ fun eliteTradeAdvice(state: EliteState, includeIllegal: Boolean, maxOptions: Int
     }.filter { it.expectedProfit > 0 }.sortedByDescending { it.expectedProfit }.take(maxOptions)
 
     val tradingFloat = (buy.firstOrNull()?.price ?: 0).toLong() * state.cargoBay + 140
-    return TradeAdvice(here, range, cash, tonnesFree, sell, buy, plans, eliteEquipmentAdvice(state), tradingFloat)
+    return TradeAdvice(here, dest, destDistance, range, cash, tonnesFree, sell, buy, plans,
+        eliteEquipmentAdvice(state), tradingFloat)
 }
 
 /**
