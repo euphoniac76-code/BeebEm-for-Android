@@ -44,11 +44,11 @@ about **30 days**, after which you run `npm run login` again.
 `session.json` holds a live login token in plain text. Treat it like a password: don't commit it,
 share it or put it in cloud storage.
 
-**It must run on your own computer** (Mac, Windows or Linux with Google Chrome installed). Tesco
-blocks sign-in from cloud and datacenter IP addresses, so it won't work from a cloud server or a
-Claude web session.
+**It must run on your own device**: a computer with Google Chrome, or an Android phone (see
+[Running on an Android phone](#running-on-an-android-phone)). Tesco blocks sign-in from cloud and
+datacenter IP addresses, so it won't work from a cloud server or a Claude web session.
 
-## Setup
+## Setup (computer)
 
 Requires Node.js 18+ and Google Chrome.
 
@@ -81,6 +81,75 @@ Restart Claude Desktop. On Windows, use a path like `"C:\\Users\\you\\tesco-assi
 claude mcp add tesco -- node /full/path/to/tesco-assistant/server.mjs
 ```
 
+## Running on an Android phone
+
+The Claude Android app can't run local add-ons like this one, and an automated Chrome doesn't run on
+Android. So on a phone you run **Claude Code** in a terminal app, and you sign in to Tesco by copying
+the login cookies from your phone's browser.
+
+**The catch:** Tesco's login token lasts about **1 hour**, and on a phone it can't be refreshed
+automatically. So each time you sit down to shop, you re-copy the cookies first (about a minute).
+One hour is plenty for a shopping session.
+
+### One-time setup
+
+1. **Install Termux** from [F-Droid](https://f-droid.org/packages/com.termux/). The Play Store version
+   is out of date.
+2. **Install Ubuntu inside Termux.** Claude Code has no native Android build, so it runs in Ubuntu:
+   ```bash
+   pkg update && pkg install -y proot-distro
+   proot-distro install ubuntu
+   proot-distro login ubuntu
+   ```
+   From now on, run `proot-distro login ubuntu` each time you open Termux.
+3. **Inside Ubuntu, install Node.js, git and Claude Code**, then sign in to Claude:
+   ```bash
+   apt update && apt install -y nodejs npm git curl
+   node --version                                   # needs v18 or newer
+   curl -fsSL https://claude.ai/install.sh | bash   # official Claude Code installer
+   claude                                           # sign in with your Claude account, then /exit
+   ```
+4. **Get this project and install it:**
+   ```bash
+   git clone -b ccr-56360ad8-iesdrj https://github.com/euphoniac76-code/BeebEm-for-Android ~/BeebEm-for-Android
+   cd ~/BeebEm-for-Android/tesco-assistant
+   npm install --omit=optional        # skips Playwright, which isn't needed on a phone
+   ```
+   If the repository is private, git asks for your GitHub username and a
+   [personal access token](https://github.com/settings/tokens) as the password.
+5. **Tell Claude Code about it:**
+   ```bash
+   claude mcp add tesco -e TESCO_AUTH=cookies -- node ~/BeebEm-for-Android/tesco-assistant/server.mjs
+   ```
+6. **Install a cookie extension in Firefox for Android.** Install
+   [Firefox](https://play.google.com/store/apps/details?id=org.mozilla.firefox), then add a
+   cookie-export add-on from its Add-ons menu, such as **Cookie-Editor**. Chrome for Android doesn't
+   support extensions, which is why this step uses Firefox.
+
+### Each time you shop
+
+1. In Firefox, go to **www.tesco.com** and make sure you're signed in. Sign in normally if not,
+   including any 2-step code.
+2. Open the cookie add-on (Firefox menu → Add-ons → Cookie-Editor) → **Export** → **JSON**. This
+   copies the cookies to the clipboard.
+3. In Termux (inside Ubuntu), save them and import them:
+   ```bash
+   cd ~/BeebEm-for-Android/tesco-assistant
+   cat > ~/tesco-cookies.json      # long-press → Paste, then press Enter, then Ctrl+D
+   npm run import-cookies -- ~/tesco-cookies.json
+   rm ~/tesco-cookies.json
+   ```
+   It tells you how many minutes the login is valid for.
+4. Run `claude` and ask, for example: *"We're out of milk, bread and bin bags. Add my usual ones to my
+   Tesco basket."*
+5. When you're done, check out in the Tesco app or on tesco.com as normal.
+
+If Claude reports that the session has expired, repeat steps 1–3. You don't need to restart Claude.
+
+> **Easier option if you also have a computer at home.** Set it up on the computer instead (see
+> Setup above). Then use Claude Code's Remote Control to drive that computer from the Claude app on
+> your phone. The login then refreshes automatically for about 30 days, with no cookie copying.
+
 ## Tools Claude gets
 
 | Tool | What it does |
@@ -107,7 +176,11 @@ Then open tesco.com or the Tesco app, check the basket, book a slot and pay.
 
 ## Troubleshooting
 
-* **"session missing or expired"**: run `npm run login` again.
+* **"session missing or expired"**: on a computer, run `npm run login` again. On a phone, re-copy
+  the cookies (see "Each time you shop").
+* **"No OAuth.AccessToken + UUID cookies"** when importing: you weren't signed in when you exported,
+  or the add-on exported only some cookies. Reload www.tesco.com while signed in and export all
+  cookies for the site.
 * **"Chrome channel not found"**: install Google Chrome, or run `npx playwright install chrome`.
 * **`ApiKeyError`**: Tesco rotated the public web API key. Update basketeer (`npm update basketeer`).
   Or copy the `x-apikey` header from a request to `xapi.tesco.com` in your browser's dev tools, and set

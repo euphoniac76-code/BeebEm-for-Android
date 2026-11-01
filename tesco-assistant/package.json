@@ -10,7 +10,8 @@
   "scripts": {
     "login": "basketeer login",
     "start": "node server.mjs",
-    "check": "node --check server.mjs"
+    "check": "node --check server.mjs && node --check import-cookies.mjs",
+    "import-cookies": "node import-cookies.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -18,8 +19,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "basketeer": "~0.4.2",
-    "playwright": "^1.49.0",
     "zod": "^3.25.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "optionalDependencies": {
+    "playwright": "^1.49.0"
+  }
 }

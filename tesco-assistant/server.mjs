@@ -7,11 +7,13 @@
  * Built on the unofficial `basketeer` SDK, which calls Tesco's own website
  * GraphQL gateway (xapi.tesco.com). Tesco has no public API.
  *
- * Authentication: run `npm run login` once. A real Chrome window opens and
- * you sign in yourself. Your password is never given to this server or to
- * Claude. The session is saved to ~/.basketeer/session.json and refreshed
- * automatically (a Chrome window briefly opens about once an hour while in
- * use). The underlying session lasts about 30 days.
+ * Authentication (your password is never given to this server or to Claude):
+ *  - Computer: `npm run login` opens a real Chrome window and you sign in. The
+ *    session is refreshed automatically (Chrome briefly opens about hourly).
+ *  - Android / no Chrome: sign in on tesco.com in your phone browser, export
+ *    the cookies, and run `npm run import-cookies -- <file>`; start the server
+ *    with TESCO_AUTH=cookies. Re-import when the session expires (~1 hour).
+ * Either way the session is saved to ~/.basketeer/session.json.
  *
  * Safety: this server can only read orders and change the basket. It has no
  * checkout, payment, delivery-slot or order-cancel tools. You review the
@@ -20,9 +22,18 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore } from "basketeer";
-import { BrowserAuthBackend } from "basketeer/auth/browser/playwright";
+import { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore, HttpAuthBackend } from "basketeer";
 import { z } from "zod";
+
+// Auth mode. "browser" (computer with Chrome): refresh by briefly opening Chrome.
+// "cookies" (Android/Termux, or anywhere without Chrome): no browser; when the
+// session expires the user re-imports cookies with import-cookies.mjs.
+const AUTH_MODE = process.env.TESCO_AUTH === "cookies" || process.env.TESCO_AUTH === "http" ? "cookies" : "browser";
+const RELOGIN_HINT =
+  AUTH_MODE === "cookies"
+    ? "Ask the user to open www.tesco.com in their phone browser (signed in), export the cookies, and run " +
+      "`npm run import-cookies -- <file>` (or `termux-clipboard-get | npm run import-cookies -- -`) in the tesco-assistant folder, then try again."
+    : "Ask the user to run `npm run login` in the tesco-assistant folder, sign in in the Chrome window, then try again.";
 
 const PRODUCT_BATCH = 15; // Tesco's max products per lookup request
 const HISTORY_PAGE = 25;
@@ -37,10 +48,8 @@ function json(value) {
 function errorResult(err) {
   const kind = err instanceof BasketeerError ? err.name : "Error";
   let message = err instanceof Error ? err.message : String(err);
-  if (err instanceof AuthExpiredError || /unauthori[sz]ed|not signed in|\b401\b/i.test(message)) {
-    message +=
-      " — The Tesco session is missing or expired. Ask the user to run `npm run login` " +
-      "in the tesco-assistant folder, sign in in the Chrome window, then try again.";
+  if (err instanceof AuthExpiredError || /unauthori[sz]ed|not signed in|refresh|\b401\b/i.test(message)) {
+    message += ` — The Tesco session is missing or expired. ${RELOGIN_HINT}`;
   }
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: kind, message }, null, 2) }] };
 }
@@ -186,8 +195,7 @@ Rules:
 - Use mode "add" to add on top of what is already in the basket; use "set" only when the user
   wants an exact quantity. Quantity 0 with mode "set" removes an item.
 - Call tesco_basket_get before large changes so you do not duplicate items already in the basket.
-- If a tool reports an expired session, ask the user to run \`npm run login\` in the
-  tesco-assistant folder.
+- If a tool reports an expired session, pass on the sign-in instructions in the error message.
 `.trim();
 
 function buildServer(client) {
@@ -352,6 +360,9 @@ const store = new FileTokenStore(); // ~/.basketeer/session.json
 const client = new Basketeer({
   session: await store.load(),
   store,
-  authBackend: new BrowserAuthBackend(),
+  authBackend:
+    AUTH_MODE === "cookies"
+      ? new HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
+      : new (await import("basketeer/auth/browser/playwright")).BrowserAuthBackend(),
 });
 await buildServer(client).connect(new StdioServerTransport());
