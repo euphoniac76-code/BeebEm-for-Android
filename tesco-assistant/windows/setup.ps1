@@ -10,13 +10,13 @@
     3. Opens Chrome so you can sign in to Tesco once.
     4. Installs the Cloudflare Tunnel as a Windows service (starts with Windows).
     5. Starts the helper now and every time you sign in to Windows (hidden, in the background).
-    6. Stops the laptop sleeping while it is plugged in, including with the lid closed.
+    6. Optional (-KeepAwakeOnPower): stops the laptop sleeping while plugged in, even with the lid closed.
     7. Adds a "Tesco sign-in" shortcut to the desktop for the monthly re-sign-in.
 #>
 param(
   [Parameter(Mandatory = $true)][string]$TunnelToken,
   [string]$Branch = "ccr-56360ad8-iesdrj",
-  [switch]$SkipPowerSettings
+  [switch]$KeepAwakeOnPower
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,9 +102,10 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
   -Principal $principal -Force | Out-Null
 Start-ScheduledTask -TaskName $TaskName
 
-Step "6/7 Keeping the laptop awake while plugged in"
-if ($SkipPowerSettings) {
-  Write-Host "Skipped (-SkipPowerSettings). The laptop must be awake for Claude to reach Tesco."
+Step "6/7 Power settings"
+if (-not $KeepAwakeOnPower) {
+  Write-Host "Left unchanged. The laptop only needs to be on and signed in to Windows while you shop with Claude."
+  Write-Host "(Re-run with -KeepAwakeOnPower to stop it sleeping when plugged in.)"
 } else {
   # AC power only: never sleep, and closing the lid does nothing. Battery behaviour is unchanged.
   RunAdmin "powercfg /change standby-timeout-ac 0; powercfg /change hibernate-timeout-ac 0; powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0; powercfg /setactive SCHEME_CURRENT"
@@ -138,4 +139,4 @@ try {
 } catch {
   Write-Host "`nThe helper did not answer yet. Check $log for errors." -ForegroundColor Yellow
 }
-Write-Host "Keep the laptop plugged in and signed in to Windows. You can lock it or close the lid."
+Write-Host "When you want Claude to shop: switch the laptop on and sign in to Windows. Everything else starts by itself."
