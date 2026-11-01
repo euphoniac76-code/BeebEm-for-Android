@@ -33,7 +33,10 @@ const RELOGIN_HINT =
   AUTH_MODE === "cookies"
     ? "Ask the user to open www.tesco.com in their phone browser (signed in), export the cookies, and run " +
       "`npm run import-cookies -- <file>` (or `termux-clipboard-get | npm run import-cookies -- -`) in the tesco-assistant folder, then try again."
-    : "Ask the user to run `npm run login` in the tesco-assistant folder, sign in in the Chrome window, then try again.";
+    : process.env.TESCO_HTTP_PORT
+      ? "The Tesco sign-in on the user's Windows laptop has expired (this happens about once a month). Ask the user to " +
+        "double-click 'Tesco sign-in' on the laptop's desktop and sign in in the Chrome window that opens, then try again."
+      : "Ask the user to run `npm run login` in the tesco-assistant folder, sign in in the Chrome window, then try again.";
 
 const PRODUCT_BATCH = 15; // Tesco's max products per lookup request
 const HISTORY_PAGE = 25;
@@ -54,12 +57,23 @@ function errorResult(err) {
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: kind, message }, null, 2) }] };
 }
 
-async function run(fn) {
-  try {
-    return json(await fn());
-  } catch (err) {
-    return errorResult(err);
-  }
+// Tesco calls run one at a time: a token refresh opens Chrome on a shared
+// profile, and two refreshes at once would collide.
+let queue = Promise.resolve();
+function serial(fn) {
+  const p = queue.then(fn, fn);
+  queue = p.catch(() => {});
+  return p;
+}
+
+function run(fn) {
+  return serial(async () => {
+    try {
+      return json(await fn());
+    } catch (err) {
+      return errorResult(err);
+    }
+  });
 }
 
 /** Compact search/favourite result for the model. */
@@ -365,4 +379,42 @@ const client = new Basketeer({
       ? new HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
       : new (await import("basketeer/auth/browser/playwright")).BrowserAuthBackend(),
 });
-await buildServer(client).connect(new StdioServerTransport());
+const httpPort = Number(process.env.TESCO_HTTP_PORT || 0);
+if (!httpPort) {
+  await buildServer(client).connect(new StdioServerTransport());
+} else {
+  // Remote mode: Streamable HTTP on localhost only. Reached from Claude through
+  // a Cloudflare Worker + Workers VPC + Cloudflare Tunnel (see cloudflare/).
+  const { createServer } = await import("node:http");
+  const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
+  createServer(async (req, res) => {
+    const path = (req.url ?? "/").split("?")[0];
+    if (path === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, signedIn: Boolean(client.session) }));
+      return;
+    }
+    if (path !== "/mcp") {
+      res.writeHead(404).end();
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405, { allow: "POST" }).end();
+      return;
+    }
+    // Stateless: a fresh MCP server + transport per request, sharing one Tesco client.
+    const server = buildServer(client);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      console.error(err);
+      if (!res.headersSent) res.writeHead(500).end();
+    }
+  }).listen(httpPort, "127.0.0.1", () => console.log(`tesco-assistant listening on http://127.0.0.1:${httpPort}/mcp`));
+}
