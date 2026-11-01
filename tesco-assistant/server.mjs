@@ -368,6 +368,88 @@ function buildServer(client) {
   return server;
 }
 
+
+// --- background sync for the Cloudflare Worker -----------------------------
+
+async function readJson(req) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+}
+
+function clubcardPrice(promotions) {
+  for (const p of promotions ?? []) {
+    const m = /£(\d+(?:\.\d{1,2})?)\s*Clubcard Price/i.exec(p.description ?? "");
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
+/**
+ * Current prices and offers for the user's regular products (from recent
+ * orders) and favourites, plus how often each is bought. The Worker stores
+ * this as the "saved price list" used while the laptop is off.
+ */
+async function snapshot(client) {
+  const orders = await fetchHistory(client, 20);
+  const usual = summarisePurchases(orders).filter((u) => u.sku).slice(0, 150);
+  let favourites = [];
+  try {
+    favourites = (await client.favourites({ limit: 48 })).results;
+  } catch {
+    // Favourites are a bonus; carry on without them.
+  }
+  const stats = new Map(usual.map((u) => [u.sku, u]));
+  const favSkus = new Set(favourites.map((f) => f.sku));
+  const skus = [...new Set([...usual.map((u) => u.sku), ...favSkus])];
+  const products = [];
+  for (let i = 0; i < skus.length; i += PRODUCT_BATCH) {
+    for (const p of await client.getProducts(skus.slice(i, i + PRODUCT_BATCH))) {
+      const u = stats.get(p.sku);
+      products.push({
+        sku: p.sku,
+        title: p.title,
+        price: p.price?.actual ?? null,
+        unitPrice: p.price?.unitPrice != null ? `${p.price.unitPrice}/${p.price.unitOfMeasure ?? ""}` : null,
+        clubcardPrice: clubcardPrice(p.promotions),
+        offers: (p.promotions ?? []).map((pr) => ({ text: pr.description, ends: pr.endDate })).filter((o) => o.text),
+        available: p.available ?? null,
+        timesBought: u?.timesBought ?? 0,
+        typicalQuantity: u?.typicalQuantity ?? null,
+        lastBought: u?.lastBought ?? null,
+        favourite: favSkus.has(p.sku),
+      });
+    }
+  }
+  return { generatedAt: new Date().toISOString(), ordersAnalysed: orders.length, products };
+}
+
+/** Add items that were saved while the laptop was off. Items without a SKU are found by name. */
+async function applySaved(client, items) {
+  const results = [];
+  for (const it of items) {
+    try {
+      let sku = it.sku;
+      let title = it.name ?? null;
+      if (!sku) {
+        const hits = (await client.search(it.name, { limit: 5 })).results;
+        const pick = hits.find((h) => h.available !== false) ?? hits[0];
+        if (!pick) throw new Error(`No Tesco product found for "${it.name}"`);
+        sku = pick.sku;
+        title = pick.title;
+      }
+      const qty = Number(it.quantity ?? 1);
+      const basket = it.mode === "set" ? await client.basket.set(sku, qty) : await client.basket.add(sku, Math.max(1, qty));
+      const line = basket.items.find((l) => l.sku === sku);
+      results.push({ id: it.id, ok: true, sku, title, quantityNow: line?.quantity ?? 0, available: line?.available ?? null });
+    } catch (err) {
+      results.push({ id: it.id, ok: false, error: err instanceof Error ? err.message : String(err) });
+      if (err instanceof AuthExpiredError) break;
+    }
+  }
+  return { results };
+}
+
 // --- start -----------------------------------------------------------------
 
 const store = new FileTokenStore(); // ~/.basketeer/session.json
@@ -392,6 +474,19 @@ if (!httpPort) {
     if (path === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, signedIn: Boolean(client.session) }));
+      return;
+    }
+    if (req.method === "POST" && (path === "/internal/snapshot" || path === "/internal/apply")) {
+      // Called only by the Cloudflare Worker (through the private tunnel).
+      try {
+        const body = path === "/internal/apply" ? await readJson(req) : {};
+        const out = await serial(() => (path === "/internal/snapshot" ? snapshot(client) : applySaved(client, body.items ?? [])));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(out));
+      } catch (err) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      }
       return;
     }
     if (path !== "/mcp") {
