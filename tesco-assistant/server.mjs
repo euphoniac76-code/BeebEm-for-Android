@@ -379,7 +379,8 @@ async function readJson(req) {
 
 function clubcardPrice(promotions) {
   for (const p of promotions ?? []) {
-    const m = /£(\d+(?:\.\d{1,2})?)\s*Clubcard Price/i.exec(p.description ?? "");
+    // "£7.50 Clubcard Price" or "£7.50 Save 25% Clubcard Price" (multibuys like "Any 3 for £10" are skipped)
+    const m = /^£(\d+(?:\.\d{1,2})?)\b.*Clubcard Price/i.exec((p.description ?? "").trim());
     if (m) return Number(m[1]);
   }
   return null;
