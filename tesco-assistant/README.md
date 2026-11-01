@@ -2,7 +2,41 @@
 
 Lets Claude use your **past Tesco orders** and help **fill your Tesco basket**.
 
-## Option A (recommended): phone or anywhere, no install
+## Recommended: chat with Claude on your phone, with the helper on a Windows laptop
+
+Claude reads your orders and adds items to your basket **directly**, from any Claude app (Android,
+iPhone, web). There are no links to tap.
+
+```
+Claude app ──► Cloudflare Worker (tesco-mcp.<you>.workers.dev/<secret>/mcp)
+                   │  Workers VPC (private, not on the internet)
+                   ▼
+              Cloudflare Tunnel ──► Windows laptop: tesco-assistant on 127.0.0.1:8787 ──► tesco.com
+```
+
+* The helper runs on your laptop because Tesco only allows sign-in, and the hourly token refresh,
+  from a real Chrome on a home connection. Cloud servers, including Cloudflare's, are blocked.
+* Cloudflare gives Claude a permanent address and carries requests privately to the laptop. No router
+  changes are needed, and the laptop isn't reachable from the internet. Only requests with the secret
+  path get through.
+* Claude can search, read orders and fill the basket. It **cannot** check out, pay, book slots or cancel orders.
+
+**Setup:**
+1. Cloudflare: a tunnel, a Workers VPC service (`127.0.0.1:8787` via the tunnel) and the Worker in
+   [`cloudflare/worker.js`](cloudflare/worker.js), with bindings `LAPTOP` (vpc_service) and `SECRET`
+   (secret text). The secret path and tunnel token are never stored in this repo.
+2. On the laptop, run once in PowerShell:
+   `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/euphoniac76-code/BeebEm-for-Android/ccr-56360ad8-iesdrj/tesco-assistant/windows/setup.ps1))) -TunnelToken <tunnel token>`
+   It installs everything and signs you in to Tesco once in Chrome. See [`windows/setup.ps1`](windows/setup.ps1) for exactly what it does.
+3. In Claude (claude.ai → Settings → Connectors → **Add custom connector**), add the Worker URL with
+   the secret path. It then works in the Claude app on your phone too.
+
+**Day to day:** keep the laptop plugged in and signed in to Windows. It can be locked, with the lid
+closed. A Chrome window may flash open on the laptop about once an hour while Claude is shopping; that's
+the token refresh. About once a month Claude will say the Tesco sign-in has expired. Double-click
+**Tesco sign-in** on the laptop's desktop and sign in.
+
+## Option A (no laptop): phone or anywhere, no install
 
 This works in the Claude app on Android with **no terminal, no server and no Tesco login handling**:
 
