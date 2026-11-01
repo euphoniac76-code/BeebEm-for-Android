@@ -22,7 +22,9 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore, HttpAuthBackend } from "basketeer";
+import * as basketeer from "basketeer";
+// Note: HttpAuthBackend only exists in basketeer releases newer than 0.4.2, so it is looked up lazily.
+const { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore } = basketeer;
 import { z } from "zod";
 
 // Auth mode. "browser" (computer with Chrome): refresh by briefly opening Chrome.
@@ -459,7 +461,9 @@ const client = new Basketeer({
   store,
   authBackend:
     AUTH_MODE === "cookies"
-      ? new HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
+      ? basketeer.HttpAuthBackend
+        ? new basketeer.HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
+        : undefined // older basketeer: no refresh, the user re-imports cookies when the session expires
       : new (await import("basketeer/auth/browser/playwright")).BrowserAuthBackend(),
 });
 const httpPort = Number(process.env.TESCO_HTTP_PORT || 0);

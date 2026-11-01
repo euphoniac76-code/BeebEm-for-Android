@@ -13,7 +13,10 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { FileTokenStore, resolveMarket, sessionFromCookies } from "basketeer";
+import { FileTokenStore, sessionFromCookies } from "basketeer";
+
+// Keep only tesco.com (UK) cookies; cookies without a domain are kept.
+const isUkTesco = (c) => !c.domain || /(^|\.)tesco\.com$/i.test(String(c.domain).replace(/^\./, ""));
 
 async function readInput(arg) {
   if (!arg || arg === "-") {
@@ -43,8 +46,7 @@ function parseCookies(text) {
 }
 
 try {
-  const market = resolveMarket("uk");
-  const session = sessionFromCookies(parseCookies(await readInput(process.argv[2])), { market });
+  const session = sessionFromCookies(parseCookies(await readInput(process.argv[2])).filter(isUkTesco));
   await new FileTokenStore().save(session);
   const mins = session.accessTokenExpiry ? Math.round((session.accessTokenExpiry - Date.now()) / 60000) : null;
   console.log("Saved Tesco session to ~/.basketeer/session.json");
