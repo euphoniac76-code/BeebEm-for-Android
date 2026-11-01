@@ -31,6 +31,22 @@ Claude app ──► Cloudflare Worker (tesco-mcp.<you>.workers.dev/<secret>/mcp
 3. In Claude (claude.ai → Settings → Connectors → **Add custom connector**), add the Worker URL with
    the secret path. It then works in the Claude app on your phone too.
 
+**When the laptop is off,** the connector keeps working in a reduced mode:
+
+| You ask Claude to… | Laptop on | Laptop off |
+| --- | --- | --- |
+| Search / check prices and offers | Live from Tesco | Live from the Apify free plan (if set up), otherwise the **saved price list** |
+| "What do I usually buy?" | Live from your orders | Saved list (refreshed from the laptop every 12 hours while it's on) |
+| Add to basket | Straight into the basket | **Saved for later.** Added automatically within ~10 minutes of the laptop being on |
+| Order history | Live | Not available (Claude can read your Gmail receipts instead) |
+
+The saved price list and saved-for-later items live in a free Cloudflare D1 database (`tesco-assistant`).
+A 10-minute cron on the Worker checks whether the laptop is reachable, then adds saved items and
+refreshes the price list. To turn on the Apify fallback, create a free account at apify.com (no card)
+and store its API token as the Worker secret `APIFY_TOKEN`. The scraper used is `zaiq~tesco-scraper`,
+which you can change with the `APIFY_ACTOR` variable. Its free $5 a month is enough for roughly 140
+laptop-off searches. If the credit runs out, searches fall back to the saved list.
+
 **Day to day:** the laptop only needs to be **on, awake and signed in to Windows while you're shopping
 with Claude**. The tunnel and helper start by themselves, and the Tesco sign-in survives the laptop being
 off. If it's been off for more than an hour, Claude's first Tesco request takes about 20 seconds longer. A Chrome window may flash open on the laptop about once an hour while Claude is shopping; that's
