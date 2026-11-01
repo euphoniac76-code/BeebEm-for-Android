@@ -1,0 +1,25 @@
+{
+  "name": "tesco-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server that lets Claude read your past Tesco orders and fill your basket. Built on the unofficial basketeer SDK. Never checks out or pays.",
+  "type": "module",
+  "bin": {
+    "tesco-assistant": "server.mjs"
+  },
+  "scripts": {
+    "login": "basketeer login",
+    "start": "node server.mjs",
+    "check": "node --check server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "basketeer": "~0.4.2",
+    "playwright": "^1.49.0",
+    "zod": "^3.25.0"
+  },
+  "license": "MIT"
+}
