@@ -1,7 +1,34 @@
 # tesco-assistant
 
-Lets Claude read your **past Tesco orders** and **add items to your Tesco basket** based on what you
-need. It runs as a local MCP server for Claude Desktop or Claude Code.
+Lets Claude use your **past Tesco orders** and help **fill your Tesco basket**.
+
+## Option A (recommended): phone or anywhere, no install
+
+This works in the Claude app on Android with **no terminal, no server and no Tesco login handling**:
+
+* **Past orders**: Claude reads the Tesco **receipt emails in your Gmail**, using the Gmail connector.
+  Every receipt lists each item, quantity and price, so Claude can work out your usual products.
+* **Basket**: Claude replies with **one tappable link per item**. Each link opens that exact product on
+  Tesco, in the app or the website, where you're already signed in. You tap **Add**.
+
+**Setup (once, about 2 minutes):**
+
+1. Make sure Gmail is connected in Claude: Settings → Connectors → Gmail.
+2. Optional, for more consistent results: install the skill. Download
+   [`claude-skill/tesco-shopping.zip`](claude-skill/tesco-shopping.zip). Then, in your phone's browser,
+   go to **claude.ai → Customize → Skills → + → Upload a skill** and choose the zip. Code execution must
+   be on in Settings → Capabilities.
+
+**Use:** ask Claude something like *"We're out of milk, bread and teabags. Give me my usual Tesco ones."*
+Then tap each link, tap Add, and check out in the Tesco app as normal.
+
+Why links rather than adding directly? Tesco has no public API. Its login is protected by bot
+detection that blocks servers (including Claude's), and its login token expires hourly. Anything that
+adds items for you has to carry your login out of your browser, which needs a computer or a lot of
+setup (Options B and C below). A link opens in your own signed-in browser or app, so nothing has to be
+set up or kept logged in.
+
+## Option B: computer (Claude adds items directly)
 
 > Unofficial. Not affiliated with Tesco. Use it only for your own account, and only within Tesco's terms.
 
@@ -81,7 +108,7 @@ Restart Claude Desktop. On Windows, use a path like `"C:\\Users\\you\\tesco-assi
 claude mcp add tesco -- node /full/path/to/tesco-assistant/server.mjs
 ```
 
-## Running on an Android phone
+## Option C: Claude Code on an Android phone (advanced, not recommended)
 
 The Claude Android app can't run local add-ons like this one, and an automated Chrome doesn't run on
 Android. So on a phone you run **Claude Code** in a terminal app, and you sign in to Tesco by copying
