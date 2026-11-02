@@ -41,7 +41,7 @@ if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm install failed" }
 Pop-Location
 
 Step "Updating the 'Tesco sign-in' shortcut"
-$signin = Join-Path $Dir "signin.ps1"
+$signinScript = Join-Path $Dir "signin.ps1"
 @"
 Write-Host 'Re-signing in to Tesco...' -ForegroundColor Cyan
 Stop-ScheduledTask -TaskName '$TaskName' -ErrorAction SilentlyContinue
@@ -51,7 +51,7 @@ node login.mjs
 Start-ScheduledTask -TaskName '$TaskName'
 Write-Host 'Done. You can close this window.' -ForegroundColor Green
 Read-Host 'Press Enter to close'
-"@ | Set-Content -Encoding UTF8 $signin
+"@ | Set-Content -Encoding UTF8 $signinScript
 
 if ($SignIn) {
   Step "Sign in to Tesco"

@@ -113,7 +113,7 @@ if (-not $KeepAwakeOnPower) {
 }
 
 Step "7/7 Adding the 'Tesco sign-in' desktop shortcut"
-$signin = Join-Path $Dir "signin.ps1"
+$signinScript = Join-Path $Dir "signin.ps1"
 @"
 Write-Host 'Re-signing in to Tesco...' -ForegroundColor Cyan
 Stop-ScheduledTask -TaskName '$TaskName' -ErrorAction SilentlyContinue
@@ -123,11 +123,11 @@ node login.mjs
 Start-ScheduledTask -TaskName '$TaskName'
 Write-Host 'Done. You can close this window.' -ForegroundColor Green
 Read-Host 'Press Enter to close'
-"@ | Set-Content -Encoding UTF8 $signin
+"@ | Set-Content -Encoding UTF8 $signinScript
 $shell = New-Object -ComObject WScript.Shell
 $lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Tesco sign-in.lnk"))
 $lnk.TargetPath = "powershell.exe"
-$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$signin`""
+$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$signinScript`""
 $lnk.WorkingDirectory = $Dir
 $lnk.Save()
 
