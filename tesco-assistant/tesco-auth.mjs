@@ -63,7 +63,7 @@ export async function saveJar(ctx) {
 }
 
 /** Put saved Tesco cookies (not yet expired) back into Chrome. Returns how many. */
-async function restoreJar(ctx) {
+export async function restoreJar(ctx) {
   let jar;
   try {
     jar = JSON.parse(await readFile(JAR, "utf8"));

@@ -58,7 +58,7 @@ foreach ($c in "node", "npm", "cloudflared") {
 
 Step "2/7 Downloading tesco-assistant to $Dir"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs") {
+foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs", "weights.mjs", "probe-weights.mjs") {
   Invoke-WebRequest "$Repo/$f" -OutFile (Join-Path $Dir $f) -UseBasicParsing
 }
 Push-Location $Dir

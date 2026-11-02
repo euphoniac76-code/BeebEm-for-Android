@@ -12,7 +12,7 @@
 // Bindings: LAPTOP (vpc_service), DB (d1), SECRET (secret_text),
 //           APIFY_TOKEN (secret_text, optional), APIFY_ACTOR (plain_text, optional).
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const LAPTOP_URL = "http://127.0.0.1:8787";
 const SNAPSHOT_EVERY_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_ACTOR = "zaiq~tesco-scraper";
@@ -57,7 +57,7 @@ const TOOLS = [
   { name: "tesco_favourites", description: "The user's Tesco favourites. Uses the saved list when the laptop is off.", inputSchema: obj({ limit: int(1, 100, 48) }), annotations: RO },
   { name: "tesco_search", description: "Search Tesco products: SKU, title, price, unit price, Clubcard Price and offers, availability. Live when the laptop is on; otherwise a live price service or the saved price list (the result says which, and how fresh).", inputSchema: obj({ query: str('What to search for, e.g. "semi skimmed milk 4 pints".'), limit: int(1, 48, 10) }, ["query"]), annotations: RO },
   { name: "tesco_basket_get", description: "The current basket (items, quantities, guide price), plus anything saved for later.", inputSchema: obj({}), annotations: RO },
-  { name: "tesco_basket_add_items", description: 'Add products to the basket. Give each item a sku (from search/usual purchases) or, if unknown, a name to search for. mode "add" (default) adds on top of what is there; "set" sets the exact quantity (0 removes). If the laptop is off, items are saved and added automatically when it is next on.', inputSchema: obj({ items: { type: "array", minItems: 1, maxItems: 60, items: obj({ sku: str("Product SKU, if known."), name: str("Product name, if the SKU is not known."), quantity: int(0, 50, 1) }) }, mode: { type: "string", enum: ["add", "set"], default: "add" } }, ["items"]), annotations: { readOnlyHint: false, destructiveHint: false } },
+  { name: "tesco_basket_add_items", description: 'Add products to the basket. Give each item a sku (from search/usual purchases) or, if unknown, a name to search for. mode "add" (default) adds on top of what is there; "set" sets the exact quantity (0 removes). Weighed products (soldBy/weightOptions in search results, e.g. pork fillet): give weight_kg (use typicalWeightKg from usual purchases if known). If the laptop is off, items are saved and added automatically when it is next on.', inputSchema: obj({ items: { type: "array", minItems: 1, maxItems: 60, items: obj({ sku: str("Product SKU, if known."), name: str("Product name, if the SKU is not known."), quantity: int(0, 50, 1), weight_kg: { type: "number", exclusiveMinimum: 0, maximum: 10, description: "Weighed products only: wanted weight in kg, e.g. 0.5 (nearest Tesco option is used)." }, by: { type: "string", enum: ["each", "kg"], description: 'Loose products only: "kg" to buy by weight.' } }) }, mode: { type: "string", enum: ["add", "set"], default: "add" } }, ["items"]), annotations: { readOnlyHint: false, destructiveHint: false } },
   { name: "tesco_basket_remove", description: "Remove a product from the basket (or from the saved-for-later list when the laptop is off).", inputSchema: obj({ sku: str("Product SKU.") }, ["sku"]), annotations: { readOnlyHint: false, destructiveHint: true } },
   { name: "tesco_saved_prices", description: "Look up the saved price list (the user's regular products and recent searches) with prices, Clubcard Prices, offers and when each was checked. Works whether or not the laptop is on.", inputSchema: obj({ filter: str("Text to match in product names; omit for all."), limit: int(1, 300, 50) }), annotations: RO },
   { name: "tesco_saved_for_later", description: "Items saved for later (waiting for the laptop), and recently applied ones with their outcome.", inputSchema: obj({}), annotations: RO },
@@ -65,6 +65,53 @@ const TOOLS = [
   { name: "tesco_status", description: "Is the laptop reachable, how fresh is the saved price list, how many items are waiting, and is the live price service set up.", inputSchema: obj({}), annotations: RO },
 ];
 const LIVE = new Set(TOOLS.slice(0, 9).map((t) => t.name));
+
+/**
+ * Tool list: the laptop's own definitions (cached in D1 whenever it is reachable) take
+ * precedence for live tools, so new laptop features need no Worker update. The
+ * Worker's descriptions are kept, since they explain the laptop-off behaviour.
+ */
+async function toolList(env) {
+  const cached = safeJson(await meta(env, "laptop_tools"));
+  if (!Array.isArray(cached)) return TOOLS;
+  const byName = new Map(cached.map((t) => [t.name, t]));
+  const merged = TOOLS.map((t) => {
+    const lt = byName.get(t.name);
+    if (!lt || !LIVE.has(t.name)) return t;
+    return { ...t, inputSchema: mergeSchema(t.inputSchema, lt.inputSchema) };
+  });
+  for (const lt of cached) if (!TOOLS.some((t) => t.name === lt.name)) merged.push({ ...lt, description: `${lt.description} Needs the laptop.` });
+  return merged;
+}
+
+/** Laptop schema, but keep Worker-only item fields (e.g. "name" for items without a SKU). */
+function mergeSchema(worker, laptop) {
+  const out = structuredClone(laptop ?? worker);
+  const wi = worker?.properties?.items?.items?.properties;
+  const li = out?.properties?.items?.items;
+  if (wi && li?.properties) {
+    for (const [k, v] of Object.entries(wi)) if (!(k in li.properties)) li.properties[k] = v;
+    if (Array.isArray(li.required)) li.required = li.required.filter((r) => r !== "sku");
+  }
+  return out;
+}
+
+async function refreshToolCache(env) {
+  try {
+    const r = await env.LAPTOP.fetch(`${LAPTOP_URL}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const tools = (await r.json())?.result?.tools;
+    if (Array.isArray(tools) && tools.length) await setMeta(env, "laptop_tools", JSON.stringify(tools)).run();
+  } catch {
+    // keep the previous cache
+  }
+}
+
+const isLive = async (env, name) => LIVE.has(name) || (safeJson(await meta(env, "laptop_tools")) ?? []).some((t) => t.name === name);
 
 // --- entry points -------------------------------------------------------------
 
@@ -96,6 +143,7 @@ export default {
     const env = safeEnv(rawEnv);
     await ensureSchema(env);
     if (!(await laptopUp(env))) return;
+    await refreshToolCache(env);
     await flushSaved(env);
     const last = await meta(env, "snapshot_at");
     if (!last || Date.now() - Date.parse(last) > SNAPSHOT_EVERY_MS) await takeSnapshot(env);
@@ -119,7 +167,7 @@ async function handle(msg, env, ctx) {
       case "ping":
         return rpcResult(id, {});
       case "tools/list":
-        return rpcResult(id, { tools: TOOLS });
+        return rpcResult(id, { tools: await toolList(env) });
       case "tools/call":
         return rpcResult(id, await callTool(params?.name, params?.arguments ?? {}, env, ctx));
       default:
@@ -133,7 +181,7 @@ async function handle(msg, env, ctx) {
 // --- tool dispatch ------------------------------------------------------------
 
 async function callTool(name, args, env, ctx) {
-  if (!TOOLS.some((t) => t.name === name)) return toolError(`Unknown tool: ${name}`);
+  if (!TOOLS.some((t) => t.name === name) && !(await isLive(env, name))) return toolError(`Unknown tool: ${name}`);
 
   switch (name) {
     case "tesco_saved_prices":
@@ -149,7 +197,7 @@ async function callTool(name, args, env, ctx) {
   }
 
   const up = await laptopUp(env);
-  if (up && LIVE.has(name)) {
+  if (up && (await isLive(env, name))) {
     // Anything saved while the laptop was off goes in first, so the basket is complete.
     const flushed = await flushSaved(env).catch(() => null);
     if (name === "tesco_basket_add_items" && args.items?.some((i) => !i.sku)) {
@@ -244,7 +292,7 @@ async function laptopPost(env, path, body) {
 async function flushSaved(env) {
   const pending = (await env.DB.prepare("SELECT * FROM saved_items WHERE status = 'pending' ORDER BY id").all()).results;
   if (!pending.length) return null;
-  const { results } = await laptopPost(env, "/internal/apply", { items: pending.map((p) => ({ id: p.id, sku: p.sku, name: p.name, quantity: p.quantity, mode: p.mode })) });
+  const { results } = await laptopPost(env, "/internal/apply", { items: pending.map((p) => ({ id: p.id, sku: p.sku, name: p.name, quantity: p.quantity, mode: p.mode, ...(safeJson(p.extra) ?? {}) })) });
   const now = new Date().toISOString();
   const stmts = (results ?? []).map((r) =>
     env.DB.prepare("UPDATE saved_items SET status = ?, result = ?, done_at = ? WHERE id = ?").bind(r.ok ? "added" : "failed", JSON.stringify(r), now, r.id),
@@ -356,8 +404,9 @@ async function saveForLater(env, items, mode = "add") {
     let name = it.name ?? null;
     if (it.sku && !name) name = (await env.DB.prepare("SELECT title FROM prices WHERE sku = ?").bind(it.sku).first())?.title ?? null;
     if (!it.sku && !name) continue;
-    const r = await env.DB.prepare("INSERT INTO saved_items (sku, name, quantity, mode, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)").bind(it.sku ?? null, name, it.quantity ?? 1, mode ?? "add", now).run();
-    out.push({ id: r.meta.last_row_id, sku: it.sku ?? null, name, quantity: it.quantity ?? 1 });
+    const extra = it.weight_kg || it.by ? JSON.stringify({ weight_kg: it.weight_kg ?? undefined, by: it.by ?? undefined }) : null;
+    const r = await env.DB.prepare("INSERT INTO saved_items (sku, name, quantity, mode, status, created_at, extra) VALUES (?, ?, ?, ?, 'pending', ?, ?)").bind(it.sku ?? null, name, it.quantity ?? 1, mode ?? "add", now, extra).run();
+    out.push({ id: r.meta.last_row_id, sku: it.sku ?? null, name, quantity: it.quantity ?? 1, ...(it.weight_kg ? { weight_kg: it.weight_kg } : {}), ...(it.by ? { by: it.by } : {}) });
   }
   return out;
 }
@@ -394,6 +443,12 @@ async function ensureSchema(env) {
       status TEXT DEFAULT 'pending', result TEXT, created_at TEXT, done_at TEXT)`),
     env.DB.prepare("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)"),
   ]);
+  // v0.4: weight/by for saved items (ignore "duplicate column" once added)
+  try {
+    await env.DB.prepare("ALTER TABLE saved_items ADD COLUMN extra TEXT").run();
+  } catch {
+    // column already exists
+  }
   schemaReady = true;
 }
 

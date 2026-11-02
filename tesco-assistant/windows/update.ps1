@@ -4,11 +4,13 @@
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/euphoniac76-code/BeebEm-for-Android/<commit>/tesco-assistant/windows/update.ps1))) -Ref <commit>
 
   Downloads the latest helper files, points the "Tesco sign-in" shortcut at the
-  new sign-in, signs you in to Tesco again, and restarts the helper.
+  new sign-in, learns once how tesco.com adds weighed items (probe-weights.mjs),
+  and restarts the helper. Add -SignIn to sign in to Tesco again as well.
 #>
 param(
   [string]$Ref = "ccr-56360ad8-iesdrj",
-  [switch]$SkipSignIn
+  [switch]$SignIn,        # also sign in to Tesco again
+  [switch]$SkipWeightProbe
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +31,7 @@ Step "Stopping the helper"
 StopHelper
 
 Step "Downloading the latest files"
-foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs") {
+foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs", "weights.mjs", "probe-weights.mjs") {
   Invoke-WebRequest "$Repo/$f" -OutFile (Join-Path $Dir $f) -UseBasicParsing
   Write-Host "  $f"
 }
@@ -51,13 +53,25 @@ Write-Host 'Done. You can close this window.' -ForegroundColor Green
 Read-Host 'Press Enter to close'
 "@ | Set-Content -Encoding UTF8 $signin
 
-if (-not $SkipSignIn) {
+if ($SignIn) {
   Step "Sign in to Tesco"
   Push-Location $Dir
   node login.mjs
   $ok = $LASTEXITCODE -eq 0
   Pop-Location
   if (-not $ok) { Write-Host "Sign-in did not complete. Double-click 'Tesco sign-in' on the desktop to try again." -ForegroundColor Yellow }
+}
+
+$fmt = Join-Path $env:USERPROFILE ".basketeer\weight-format.json"
+$learned = $false
+try { $learned = [bool]((Get-Content $fmt -Raw | ConvertFrom-Json).weightOptions.weightKey) } catch {}
+if (-not $SkipWeightProbe -and -not $learned) {
+  Step "Learning how Tesco adds weighed items (one-off, about a minute)"
+  Write-Host "A Chrome window will open and add a pork fillet and some loose bananas to your basket," -ForegroundColor Yellow
+  Write-Host "then take them out again. Please don't touch it while it works." -ForegroundColor Yellow
+  Push-Location $Dir
+  node probe-weights.mjs
+  Pop-Location
 }
 
 Step "Starting the helper"

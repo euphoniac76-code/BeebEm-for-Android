@@ -26,6 +26,7 @@ import * as basketeer from "basketeer";
 // Note: HttpAuthBackend only exists in basketeer releases newer than 0.4.2, so it is looked up lazily.
 const { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore } = basketeer;
 import { z } from "zod";
+import { loadFormat, nearestOption, sendWeighted, soldBy, soldByText } from "./weights.mjs";
 
 // Auth mode. "browser" (computer with Chrome): refresh by briefly opening Chrome.
 // "cookies" (Android/Termux, or anywhere without Chrome): no browser; when the
@@ -87,7 +88,74 @@ function slimProduct(p) {
     unitPrice: p.price?.unitPrice != null ? `${p.price.unitPrice}/${p.price.unitOfMeasure ?? ""}` : null,
     available: p.available ?? null,
     offers: (p.promotions ?? []).map((pr) => pr.description).filter(Boolean),
+    ...weightInfo(p),
   };
+}
+
+/** For weighed products only: how it's sold, e.g. the weight options Tesco offers. */
+function weightInfo(p) {
+  const s = soldBy(p);
+  if (s.kind === "each") return {};
+  return { soldBy: soldByText(s), ...(s.kind === "weight-options" ? { weightOptions: s.options } : {}) };
+}
+
+/** Look up full product details (incl. weight rules) for several SKUs, 15 per request. */
+async function productMap(client, skus) {
+  const map = new Map();
+  const unique = [...new Set(skus.filter(Boolean).map(String))];
+  for (let i = 0; i < unique.length; i += PRODUCT_BATCH) {
+    for (const p of await client.getProducts(unique.slice(i, i + PRODUCT_BATCH))) map.set(p.sku, p);
+  }
+  return map;
+}
+
+const NEEDS_PROBE =
+  "This product is sold by weight, and the helper hasn't yet learned how tesco.com adds weighed items. " +
+  "Ask the user to run the update command on the laptop (it records this once, automatically).";
+
+/**
+ * Add or set one basket line, handling weighed products:
+ *  - weight options (e.g. pork fillet): picks Tesco's option nearest weight_kg (or the default)
+ *  - loose by kg: uses the recorded by-kg format, else adds the nearest number of pieces
+ *  - everything else: an ordinary "N pieces" line
+ */
+async function addLine(client, product, { sku, quantity = 1, weight_kg: weightKg, by, mode = "add" }) {
+  const s = soldBy(product);
+  if (s.kind === "weight-options") {
+    const fmt = (await loadFormat())?.weightOptions;
+    if (!fmt?.weightKey) throw new Error(NEEDS_PROBE);
+    const opt = nearestOption(s.options, weightKg);
+    let qty = quantity;
+    if (mode === "add") qty += (await client.basket.get()).items.find((l) => l.sku === sku)?.quantity ?? 0;
+    const r = await sendWeighted(client, fmt, { sku, quantity: qty, weightKg: opt.weightKg });
+    return {
+      quantityNow: r.line?.quantity ?? qty,
+      weightKg: opt.weightKg,
+      price: opt.price,
+      note: weightKg && Math.abs(opt.weightKg - weightKg) > 0.001 ? `${weightKg}kg isn't offered; nearest option is ${opt.weightKg}kg` : undefined,
+    };
+  }
+  if (s.kind === "loose" && (by === "kg" || weightKg)) {
+    const kg = weightKg ?? quantity * (s.averageWeightKg ?? 0);
+    const fmt = (await loadFormat())?.loose;
+    if (fmt) {
+      const step = s.stepKg || 0.05;
+      const want = Math.max(s.minKg || step, Math.round(kg / step) * step);
+      const r = await sendWeighted(client, fmt, { sku, quantity: 1, weightKg: want });
+      return { weightKg: Math.round(want * 1000) / 1000, quantityNow: r.line?.quantity ?? null, note: "set to this total weight" };
+    }
+    // Not learned yet: buy the nearest number of pieces instead.
+    const pieces = Math.max(1, Math.round(kg / (s.averageWeightKg || kg || 1)));
+    const basket = await client.basket.set(sku, pieces);
+    return {
+      quantityNow: basket.items.find((l) => l.sku === sku)?.quantity ?? pieces,
+      note: `added ${pieces} piece(s), about ${Math.round(pieces * s.averageWeightKg * 1000) / 1000}kg (buying by kg isn't set up yet)`,
+    };
+  }
+  if (mode === "add" && quantity === 0) throw new Error('quantity 0 only makes sense with mode "set"');
+  const basket = mode === "add" ? await client.basket.add(sku, quantity) : await client.basket.set(sku, quantity);
+  const line = basket.items.find((l) => l.sku === sku);
+  return { quantityNow: line?.quantity ?? 0, available: line?.available ?? null };
 }
 
 function orderDate(o) {
@@ -140,11 +208,12 @@ function summarisePurchases(orders, filter) {
       if (needle && !it.title.toLowerCase().includes(needle)) continue;
       let row = bySku.get(key);
       if (!row) {
-        row = { sku: it.productId, title: it.title, unit: it.unit, orders: new Set(), qtys: [], lastBought: null };
+        row = { sku: it.productId, title: it.title, unit: it.unit, orders: new Set(), qtys: [], weights: [], lastBought: null };
         bySku.set(key, row);
       }
       row.orders.add(o.id);
       row.qtys.push(it.quantity);
+      if (it.weight > 0) row.weights.push(it.weight);
       if (date && (!row.lastBought || date > row.lastBought)) row.lastBought = date;
     }
   }
@@ -155,6 +224,7 @@ function summarisePurchases(orders, filter) {
       timesBought: r.orders.size,
       boughtInPercentOfOrders: Math.round((100 * r.orders.size) / Math.max(orders.length, 1)),
       typicalQuantity: median(r.qtys),
+      ...(r.weights.length ? { typicalWeightKg: Math.round(median(r.weights) * 1000) / 1000 } : {}),
       unit: r.unit,
       lastBought: r.lastBought,
     }))
@@ -211,6 +281,8 @@ Rules:
 - Use mode "add" to add on top of what is already in the basket; use "set" only when the user
   wants an exact quantity. Quantity 0 with mode "set" removes an item.
 - Call tesco_basket_get before large changes so you do not duplicate items already in the basket.
+- Weighed products show soldBy/weightOptions. Pass weight_kg (the user's typicalWeightKg if known) and
+  say which weight was chosen and its price.
 - If a tool reports an expired session, pass on the sign-in instructions in the error message.
 `.trim();
 
@@ -309,14 +381,18 @@ function buildServer(client) {
   server.tool(
     "tesco_basket_add_items",
     'Add one or more products to the basket by SKU. mode "add" (default) adds on top of any quantity already ' +
-      'in the basket; mode "set" sets the exact quantity (0 removes). Items are processed one by one; ' +
-      "the result reports each item's outcome and the new basket total.",
+      'in the basket; mode "set" sets the exact quantity (0 removes). Weighed products: for items with ' +
+      "weightOptions (e.g. pork fillet) give weight_kg to pick the nearest option (default option otherwise; " +
+      "use typicalWeightKg from tesco_usual_purchases); for loose items give by:\"kg\" with weight_kg to buy by " +
+      "weight, otherwise they're bought by the piece. Items are processed one by one; the result reports each item's outcome.",
     {
       items: z
         .array(
           z.object({
             sku: z.string().describe("Product SKU from tesco_search / tesco_usual_purchases."),
             quantity: z.number().int().min(0).max(50).default(1),
+            weight_kg: z.number().positive().max(10).optional().describe("Weighed products only: wanted weight in kg, e.g. 0.5."),
+            by: z.enum(["each", "kg"]).optional().describe('Loose products only: "kg" to buy by weight.'),
           }),
         )
         .min(1)
@@ -327,25 +403,17 @@ function buildServer(client) {
     ({ items, mode }) =>
       run(async () => {
         const results = [];
-        let basket = null;
-        for (const { sku, quantity } of items) {
+        const products = await productMap(client, items.map((i) => i.sku)).catch(() => new Map());
+        for (const it of items) {
           try {
-            if (mode === "add") {
-              if (quantity === 0) {
-                results.push({ sku, ok: false, error: 'quantity 0 only makes sense with mode "set"' });
-                continue;
-              }
-              basket = await client.basket.add(sku, quantity);
-            } else {
-              basket = await client.basket.set(sku, quantity);
-            }
-            const line = basket.items.find((l) => l.sku === sku);
-            results.push({ sku, ok: true, quantityNow: line?.quantity ?? 0, available: line?.available ?? null });
+            const r = await addLine(client, products.get(it.sku), { ...it, mode });
+            results.push({ sku: it.sku, ok: true, title: products.get(it.sku)?.title, ...r });
           } catch (err) {
-            results.push({ sku, ok: false, error: err instanceof Error ? err.message : String(err) });
+            results.push({ sku: it.sku, ok: false, error: err instanceof Error ? err.message : String(err) });
             if (err instanceof AuthExpiredError) break;
           }
         }
+        const basket = await client.basket.get().catch(() => null);
         return {
           results,
           basketItemCount: basket?.items.length ?? null,
@@ -442,9 +510,15 @@ async function applySaved(client, items) {
         title = pick.title;
       }
       const qty = Number(it.quantity ?? 1);
-      const basket = it.mode === "set" ? await client.basket.set(sku, qty) : await client.basket.add(sku, Math.max(1, qty));
-      const line = basket.items.find((l) => l.sku === sku);
-      results.push({ id: it.id, ok: true, sku, title, quantityNow: line?.quantity ?? 0, available: line?.available ?? null });
+      const product = (await productMap(client, [sku]).catch(() => new Map())).get(sku);
+      const r = await addLine(client, product, {
+        sku,
+        quantity: it.mode === "set" ? qty : Math.max(1, qty),
+        weight_kg: it.weight_kg ?? undefined,
+        by: it.by ?? undefined,
+        mode: it.mode === "set" ? "set" : "add",
+      });
+      results.push({ id: it.id, ok: true, sku, title: product?.title ?? title, ...r });
     } catch (err) {
       results.push({ id: it.id, ok: false, error: err instanceof Error ? err.message : String(err) });
       if (err instanceof AuthExpiredError) break;
