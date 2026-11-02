@@ -50,7 +50,7 @@ laptop-off searches. If the credit runs out, searches fall back to the saved lis
 **Day to day:** the laptop only needs to be **on, awake and signed in to Windows while you're shopping
 with Claude**. The tunnel and helper start by themselves, and the Tesco sign-in survives the laptop being
 off. If it's been off for more than an hour, Claude's first Tesco request takes about 20 seconds longer. A Chrome window may flash open on the laptop about once an hour while Claude is shopping; that's
-the token refresh. About once a month Claude will say the Tesco sign-in has expired. Double-click
+the token refresh. If Claude says the Tesco sign-in has expired, double-click
 **Tesco sign-in** on the laptop's desktop and sign in.
 
 ## Option A (no laptop): phone or anywhere, no install

@@ -8,7 +8,7 @@
     "tesco-assistant": "server.mjs"
   },
   "scripts": {
-    "login": "basketeer login",
+    "login": "node login.mjs",
     "start": "node server.mjs",
     "check": "node --check server.mjs && node --check import-cookies.mjs",
     "import-cookies": "node import-cookies.mjs"

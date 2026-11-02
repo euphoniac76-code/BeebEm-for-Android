@@ -58,7 +58,7 @@ foreach ($c in "node", "npm", "cloudflared") {
 
 Step "2/7 Downloading tesco-assistant to $Dir"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-foreach ($f in "package.json", "server.mjs") {
+foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs") {
   Invoke-WebRequest "$Repo/$f" -OutFile (Join-Path $Dir $f) -UseBasicParsing
 }
 Push-Location $Dir
@@ -74,7 +74,7 @@ Write-Host "A Chrome window will open on the Tesco login page." -ForegroundColor
 Write-Host "Sign in normally (including any code Tesco emails or texts you), wait for the Tesco page to load," -ForegroundColor Yellow
 Write-Host "then come back to this window and press Enter." -ForegroundColor Yellow
 Push-Location $Dir
-npx basketeer login
+node login.mjs
 if ($LASTEXITCODE -ne 0) { throw "Tesco sign-in did not complete. Run this setup again to retry." }
 Pop-Location
 
@@ -119,7 +119,7 @@ Write-Host 'Re-signing in to Tesco...' -ForegroundColor Cyan
 Stop-ScheduledTask -TaskName '$TaskName' -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { `$_.CommandLine -like '*server.mjs*' } | ForEach-Object { Stop-Process -Id `$_.ProcessId -Force }
 Set-Location '$Dir'
-npx basketeer login
+node login.mjs
 Start-ScheduledTask -TaskName '$TaskName'
 Write-Host 'Done. You can close this window.' -ForegroundColor Green
 Read-Host 'Press Enter to close'

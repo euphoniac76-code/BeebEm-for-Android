@@ -36,7 +36,7 @@ const RELOGIN_HINT =
     ? "Ask the user to open www.tesco.com in their phone browser (signed in), export the cookies, and run " +
       "`npm run import-cookies -- <file>` (or `termux-clipboard-get | npm run import-cookies -- -`) in the tesco-assistant folder, then try again."
     : process.env.TESCO_HTTP_PORT
-      ? "The Tesco sign-in on the user's Windows laptop has expired (this happens about once a month). Ask the user to " +
+      ? "The Tesco sign-in on the user's Windows laptop has expired. Ask the user to " +
         "double-click 'Tesco sign-in' on the laptop's desktop and sign in in the Chrome window that opens, then try again."
       : "Ask the user to run `npm run login` in the tesco-assistant folder, sign in in the Chrome window, then try again.";
 
@@ -464,7 +464,7 @@ const client = new Basketeer({
       ? basketeer.HttpAuthBackend
         ? new basketeer.HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
         : undefined // older basketeer: no refresh, the user re-imports cookies when the session expires
-      : new (await import("basketeer/auth/browser/playwright")).BrowserAuthBackend(),
+      : new (await import("./tesco-auth.mjs")).TescoBrowserAuth(), // renews via Chrome, keeping the full cookie jar
 });
 const httpPort = Number(process.env.TESCO_HTTP_PORT || 0);
 if (!httpPort) {
