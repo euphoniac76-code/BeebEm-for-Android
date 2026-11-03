@@ -113,26 +113,60 @@ const NEEDS_PROBE =
   "This product is sold by weight, and the helper hasn't yet learned how tesco.com adds weighed items. " +
   "Ask the user to run the update command on the laptop (it records this once, automatically).";
 
+/** "500g", "0.5kg", "1.2 kg" in free text -> kg, else undefined. */
+function weightFromText(text) {
+  const m = /(\d+(?:\.\d+)?)\s*(kg|kilo(?:gram)?s?|g|grams?)\b/i.exec(String(text ?? ""));
+  if (!m) return undefined;
+  const v = Number(m[1]);
+  return /^k/i.test(m[2]) ? v : v / 1000;
+}
+
+// Recent orders, cached for 15 minutes (used to find the usual weight of a product).
+let historyCache = { at: 0, orders: null };
+async function recentOrders(client) {
+  if (!historyCache.orders || Date.now() - historyCache.at > 15 * 60 * 1000) {
+    historyCache = { at: Date.now(), orders: await fetchHistory(client, 20) };
+  }
+  return historyCache.orders;
+}
+
+/** The weight (kg) this user usually buys of a product, from recent orders. */
+async function usualWeight(client, sku) {
+  const row = summarisePurchases(await recentOrders(client)).find((u) => u.sku === sku);
+  return row?.typicalWeightKg ?? null;
+}
+
 /**
  * Add or set one basket line, handling weighed products:
  *  - weight options (e.g. pork fillet): picks Tesco's option nearest weight_kg (or the default)
  *  - loose by kg: uses the recorded by-kg format, else adds the nearest number of pieces
  *  - everything else: an ordinary "N pieces" line
  */
-async function addLine(client, product, { sku, quantity = 1, weight_kg: weightKg, by, mode = "add" }) {
+async function addLine(client, product, { sku, quantity = 1, weight_kg, by, name, mode = "add" }) {
   const s = soldBy(product);
+  // A chat may have an old copy of the tool list without weight_kg: accept "500g"/"0.5kg" in the name too.
+  let weightKg = weight_kg ?? weightFromText(name);
   if (s.kind === "weight-options") {
     const fmt = (await loadFormat())?.weightOptions;
     if (!fmt?.weightKey) throw new Error(NEEDS_PROBE);
+    let chosenBy = weightKg ? "requested" : "default";
+    if (!weightKg) {
+      // No weight asked for: use the weight this user usually buys, not Tesco's default.
+      const usual = await usualWeight(client, sku).catch(() => null);
+      if (usual) [weightKg, chosenBy] = [usual, "your usual weight"];
+    }
     const opt = nearestOption(s.options, weightKg);
     let qty = quantity;
     if (mode === "add") qty += (await client.basket.get()).items.find((l) => l.sku === sku)?.quantity ?? 0;
     const r = await sendWeighted(client, fmt, { sku, quantity: qty, weightKg: opt.weightKg });
+    const notes = [`weight: ${opt.weightKg}kg (${chosenBy === "default" ? "Tesco's default" : chosenBy}), £${Number(opt.price).toFixed(2)} each`];
+    if (weightKg && Math.abs(opt.weightKg - weightKg) > 0.001) notes.push(`${weightKg}kg isn't offered; nearest option used`);
     return {
       quantityNow: r.line?.quantity ?? qty,
       weightKg: opt.weightKg,
       price: opt.price,
-      note: weightKg && Math.abs(opt.weightKg - weightKg) > 0.001 ? `${weightKg}kg isn't offered; nearest option is ${opt.weightKg}kg` : undefined,
+      note: notes.join("; "),
+      otherWeights: s.options.map((o) => `${o.weightKg}kg £${Number(o.price).toFixed(2)}`).join(", "),
     };
   }
   if (s.kind === "loose" && (by === "kg" || weightKg)) {
@@ -392,6 +426,7 @@ function buildServer(client) {
             sku: z.string().describe("Product SKU from tesco_search / tesco_usual_purchases."),
             quantity: z.number().int().min(0).max(50).default(1),
             weight_kg: z.number().positive().max(10).optional().describe("Weighed products only: wanted weight in kg, e.g. 0.5."),
+            name: z.string().optional().describe('Optional product name or note; a weight in it such as "500g" is used if weight_kg is not given.'),
             by: z.enum(["each", "kg"]).optional().describe('Loose products only: "kg" to buy by weight.'),
           }),
         )
@@ -516,6 +551,7 @@ async function applySaved(client, items) {
         quantity: it.mode === "set" ? qty : Math.max(1, qty),
         weight_kg: it.weight_kg ?? undefined,
         by: it.by ?? undefined,
+        name: it.name ?? undefined,
         mode: it.mode === "set" ? "set" : "add",
       });
       results.push({ id: it.id, ok: true, sku, title: product?.title ?? title, ...r });
