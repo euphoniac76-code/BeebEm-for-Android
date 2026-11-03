@@ -43,6 +43,9 @@ export async function launchChrome() {
   const channel = process.env.TESCO_CHROME_CHANNEL ?? "chrome"; // "" = Playwright's bundled Chromium (testing)
   const ctx = await chromium.launchPersistentContext(PROFILE, {
     channel: channel || undefined,
+    // Playwright adds --no-sandbox by default, which shows a warning banner and makes
+    // Chrome look less like an ordinary browser to Tesco's bot checks.
+    chromiumSandbox: process.env.TESCO_CHROME_SANDBOX !== "0",
     headless: process.env.TESCO_CHROME_HEADLESS === "1", // testing only; Tesco blocks headless Chrome
     viewport: { width: 1280, height: 800 },
     locale: "en-GB",
