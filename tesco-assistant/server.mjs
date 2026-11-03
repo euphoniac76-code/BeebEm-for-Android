@@ -579,8 +579,10 @@ const httpPort = Number(process.env.TESCO_HTTP_PORT || 0);
  * Keep-alive (laptop mode): renew the hourly Tesco token ~15 minutes before it
  * expires, so Tesco never sees an expired sign-in while the laptop is on. After a
  * failure, wait 30 minutes before trying again (no Chrome window storm).
+ * Off unless TESCO_KEEPALIVE=1 (it opens a Chrome window about every 45 minutes);
+ * without it, renewal happens only when Claude next uses Tesco.
  */
-if (httpPort && AUTH_MODE === "browser") {
+if (httpPort && AUTH_MODE === "browser" && process.env.TESCO_KEEPALIVE === "1") {
   let lastFailure = 0;
   const keepAlive = () =>
     serial(async () => {
