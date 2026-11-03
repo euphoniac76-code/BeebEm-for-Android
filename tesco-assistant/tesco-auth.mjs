@@ -51,8 +51,12 @@ export async function launchChrome() {
     ignoreDefaultArgs: ["--enable-automation"],
   });
   await ctx.addInitScript(STEALTH);
+  if (testHooks.onContext) await testHooks.onContext(ctx);
   return ctx;
 }
+
+/** Testing only: lets a test intercept Chrome's requests (e.g. a fake tesco.com). */
+export const testHooks = { onContext: null };
 
 /** Save every Tesco cookie from Chrome. Returns them. */
 export async function saveJar(ctx) {
@@ -62,8 +66,15 @@ export async function saveJar(ctx) {
   return cookies;
 }
 
-/** Put saved Tesco cookies (not yet expired) back into Chrome. Returns how many. */
-export async function restoreJar(ctx) {
+// The hourly token cookies. A browser that stayed open would still be sending
+// these when it renews, so they're put back even after they've expired.
+const HOURLY_AUTH = new Set(["OAuth.AccessToken", "UUID"]);
+
+/**
+ * Put saved Tesco cookies back into Chrome. Expired cookies are skipped, except
+ * the hourly sign-in ones when `withExpiredAuth` is set. Returns how many.
+ */
+export async function restoreJar(ctx, { withExpiredAuth = false } = {}) {
   let jar;
   try {
     jar = JSON.parse(await readFile(JAR, "utf8"));
@@ -71,7 +82,12 @@ export async function restoreJar(ctx) {
     return 0;
   }
   const now = Date.now() / 1000;
-  const keep = jar.filter((c) => c.expires === -1 || c.expires === undefined || c.expires > now + 30);
+  const keep = [];
+  for (const c of jar) {
+    const live = c.expires === -1 || c.expires === undefined || c.expires > now + 30;
+    if (live) keep.push(c);
+    else if (withExpiredAuth && HOURLY_AUTH.has(c.name)) keep.push({ ...c, expires: Math.floor(now) + 15 * 60 });
+  }
   if (keep.length) await ctx.addCookies(keep);
   return keep.length;
 }
@@ -96,23 +112,46 @@ export class TescoBrowserAuth {
   async refresh() {
     const ctx = await launchChrome();
     try {
-      const restored = await restoreJar(ctx);
+      const restored = await restoreJar(ctx, { withExpiredAuth: true });
       const page = ctx.pages()[0] ?? (await ctx.newPage());
-      const token = async () => (await ctx.cookies()).find((c) => c.name === "OAuth.AccessToken" && isTesco(c))?.value;
+      const all = async () => (await ctx.cookies()).filter(isTesco);
+      const token = async () => (await all()).find((c) => c.name === "OAuth.AccessToken" && c.expires > Date.now() / 1000 + 60)?.value;
       const before = await token();
-      await page.goto(REFRESH_URL, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
-      let path = "";
-      for (let i = 0; i < 25; i++) {
-        path = page.url().split("?")[0];
-        if (path.includes("/account/login")) break;
-        const now = await token();
-        if (now && now !== before && !path.includes("/account/auth")) break;
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-      const cookies = (await ctx.cookies()).filter(isTesco);
-      log(`renewal: restored ${restored} saved cookies, ended on ${path}, ${cookies.length} Tesco cookies now:\n  ${describeCookies(cookies)}`);
-      if (path.includes("/account/login")) {
-        throw new AuthExpiredError("Tesco sent the renewal to its login page: the Tesco sign-in has expired.");
+
+      /** Open a page and wait up to `secs` for a fresh access token (or the login page). */
+      const attempt = async (url, secs, label) => {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+        let path = "";
+        for (let i = 0; i < secs; i++) {
+          path = page.url().split("?")[0];
+          if (path.includes("/account/login")) break;
+          const now = await token();
+          if (now && now !== before && !path.includes("/account/auth")) return { ok: true, path };
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        const names = (await all()).map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID");
+        log(`renewal ${label}: ended on ${path}; sign-in cookies now: ${names.join(", ") || "none"}`);
+        return { ok: false, path };
+      };
+
+      let r = await attempt(REFRESH_URL, 25, "step 1");
+      // Tesco sometimes answers with only a provisional sign-in (OAuth.RefreshToken.Provisional).
+      // Let its groceries page finish loading, then ask for the token once more.
+      if (!r.ok && !r.path.includes("/account/login")) r = await attempt(GROCERIES_URL, 15, "step 2 (groceries page)");
+      if (!r.ok && !r.path.includes("/account/login")) r = await attempt(REFRESH_URL, 20, "step 3 (renew again)");
+
+      const cookies = await all();
+      log(`renewal ${r.ok ? "OK" : "FAILED"}: restored ${restored} saved cookies, ended on ${r.path}, ${cookies.length} Tesco cookies:\n  ${describeCookies(cookies)}`);
+      if (!r.ok) {
+        // Don't save: keep the last good cookie jar for the next attempt.
+        const provisional = cookies.some((c) => c.name === "OAuth.RefreshToken.Provisional");
+        throw new AuthExpiredError(
+          r.path.includes("/account/login")
+            ? "Tesco sent the renewal to its login page: the Tesco sign-in has expired."
+            : provisional
+              ? "Tesco gave only a provisional sign-in and wants the user to sign in again to confirm it's them."
+              : "Tesco did not issue a new sign-in token.",
+        );
       }
       await saveJar(ctx);
       return sessionFromCookies(cookies);

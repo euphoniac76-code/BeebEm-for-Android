@@ -566,17 +566,39 @@ async function applySaved(client, items) {
 // --- start -----------------------------------------------------------------
 
 const store = new FileTokenStore(); // ~/.basketeer/session.json
-const client = new Basketeer({
-  session: await store.load(),
-  store,
-  authBackend:
-    AUTH_MODE === "cookies"
-      ? basketeer.HttpAuthBackend
-        ? new basketeer.HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
-        : undefined // older basketeer: no refresh, the user re-imports cookies when the session expires
-      : new (await import("./tesco-auth.mjs")).TescoBrowserAuth(), // renews via Chrome, keeping the full cookie jar
-});
+const authBackend =
+  AUTH_MODE === "cookies"
+    ? basketeer.HttpAuthBackend
+      ? new basketeer.HttpAuthBackend() // best effort; Tesco UK usually refuses this, then the user re-imports cookies
+      : undefined // older basketeer: no refresh, the user re-imports cookies when the session expires
+    : new (await import("./tesco-auth.mjs")).TescoBrowserAuth(); // renews via Chrome, keeping the full cookie jar
+const client = new Basketeer({ session: await store.load(), store, authBackend });
 const httpPort = Number(process.env.TESCO_HTTP_PORT || 0);
+
+/**
+ * Keep-alive (laptop mode): renew the hourly Tesco token ~15 minutes before it
+ * expires, so Tesco never sees an expired sign-in while the laptop is on. After a
+ * failure, wait 30 minutes before trying again (no Chrome window storm).
+ */
+if (httpPort && AUTH_MODE === "browser") {
+  let lastFailure = 0;
+  const keepAlive = () =>
+    serial(async () => {
+      const s = await store.load().catch(() => null);
+      if (!s?.accessTokenExpiry) return;
+      const left = s.accessTokenExpiry - Date.now();
+      if (left > 15 * 60 * 1000 || Date.now() - lastFailure < 30 * 60 * 1000) return;
+      try {
+        await store.save(await authBackend.refresh(s)); // basketeer adopts the newer stored session on its next 401
+        console.log(new Date().toISOString(), `[keep-alive] renewed the Tesco sign-in (${Math.round(left / 60000)} min were left)`);
+      } catch (err) {
+        lastFailure = Date.now();
+        console.log(new Date().toISOString(), `[keep-alive] renewal failed: ${err instanceof Error ? err.message : err}`);
+      }
+    });
+  setInterval(keepAlive, 5 * 60 * 1000);
+  setTimeout(keepAlive, 60 * 1000);
+}
 if (!httpPort) {
   await buildServer(client).connect(new StdioServerTransport());
 } else {
