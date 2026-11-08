@@ -58,9 +58,10 @@ foreach ($c in "node", "npm", "cloudflared") {
 
 Step "2/7 Downloading tesco-assistant to $Dir"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs", "weights.mjs", "probe-weights.mjs") {
+foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs", "weights.mjs", "probe-weights.mjs", "credentials.mjs") {
   Invoke-WebRequest "$Repo/$f" -OutFile (Join-Path $Dir $f) -UseBasicParsing
 }
+Invoke-WebRequest "$Repo/windows/credential.ps1" -OutFile (Join-Path $Dir "credential.ps1") -UseBasicParsing
 Push-Location $Dir
 npm install --no-fund --no-audit | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "npm install failed" }

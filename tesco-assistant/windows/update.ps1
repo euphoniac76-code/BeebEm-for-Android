@@ -10,7 +10,8 @@
 param(
   [string]$Ref = "ccr-56360ad8-iesdrj",
   [switch]$SignIn,        # also sign in to Tesco again
-  [switch]$SkipWeightProbe
+  [switch]$SkipWeightProbe,
+  [switch]$SavePassword   # save your Tesco email + password in Windows Credential Manager
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,10 +32,12 @@ Step "Stopping the helper"
 StopHelper
 
 Step "Downloading the latest files"
-foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs", "weights.mjs", "probe-weights.mjs") {
+foreach ($f in "package.json", "server.mjs", "tesco-auth.mjs", "login.mjs", "weights.mjs", "probe-weights.mjs", "credentials.mjs") {
   Invoke-WebRequest "$Repo/$f" -OutFile (Join-Path $Dir $f) -UseBasicParsing
   Write-Host "  $f"
 }
+Invoke-WebRequest "$Repo/windows/credential.ps1" -OutFile (Join-Path $Dir "credential.ps1") -UseBasicParsing
+Write-Host "  credential.ps1"
 Push-Location $Dir
 npm install --no-fund --no-audit | Out-Host
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm install failed" }
@@ -52,6 +55,20 @@ Start-ScheduledTask -TaskName '$TaskName'
 Write-Host 'Done. You can close this window.' -ForegroundColor Green
 Read-Host 'Press Enter to close'
 "@ | Set-Content -Encoding UTF8 $signinScript
+
+Step "Adding the 'Tesco password' shortcut (save or change the saved Tesco password)"
+$credScript = Join-Path $Dir "credential.ps1"
+$shell = New-Object -ComObject WScript.Shell
+$lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Tesco password.lnk"))
+$lnk.TargetPath = "powershell.exe"
+$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$credScript`" -Save"
+$lnk.WorkingDirectory = $Dir
+$lnk.Save()
+
+if ($SavePassword) {
+  Step "Save your Tesco password"
+  & $credScript -Save
+}
 
 if ($SignIn) {
   Step "Sign in to Tesco"

@@ -15,6 +15,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthExpiredError, sessionFromCookies } from "basketeer";
+import { getTescoCredentials } from "./credentials.mjs";
 
 const DIR = join(homedir(), ".basketeer");
 const PROFILE = join(DIR, "chrome-profile");
@@ -24,11 +25,9 @@ const GROCERIES_URL = "https://www.tesco.com/groceries/";
 const REFRESH_URL =
   "https://www.tesco.com/account/auth/en-GB/refresh-token?soft-refresh=false" +
   "&from=https%3A%2F%2Fwww.tesco.com%2Fshop%2Fen-GB%2Flanding%2Fgroceries";
-const STEALTH = `() => {
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-GB', 'en'] });
-  Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-}`;
+// No "stealth" script: the fake navigator values it used (plugins [1,2,3], webdriver
+// undefined) are themselves bot signals now. --disable-blink-features=AutomationControlled
+// already makes navigator.webdriver false, as in ordinary Chrome; the rest is real Chrome.
 
 const isTesco = (c) => /(^|\.)tesco\.com$/i.test(String(c.domain ?? "").replace(/^\./, ""));
 const log = (...a) => console.log(new Date().toISOString(), "[tesco-auth]", ...a);
@@ -53,7 +52,6 @@ export async function launchChrome() {
     args: ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"],
     ignoreDefaultArgs: ["--enable-automation"],
   });
-  await ctx.addInitScript(STEALTH);
   if (testHooks.onContext) await testHooks.onContext(ctx);
   return ctx;
 }
@@ -71,6 +69,9 @@ export async function saveJar(ctx) {
 
 const STATE = join(DIR, "renewal-state.json");
 const BACKOFF_MS = 15 * 60 * 1000;
+const AUTO_BACKOFF_MS = 6 * 60 * 60 * 1000; // at most one automatic password sign-in attempt per 6 hours after a failure
+const AUTH_LOGIN_URL =
+  "https://www.tesco.com/account/auth/en-GB/login?from=https%3A%2F%2Fwww.tesco.com%2Fgroceries%2Fen-GB%2F";
 
 async function readJarFile() {
   try {
@@ -139,28 +140,129 @@ export class TescoBrowserAuth {
   }
 
   async refresh() {
-    // After a failed renewal, don't try again for a while: each attempt opens Chrome for
-    // about a minute, and repeated failures may make Tesco's security checks stricter.
-    const state = await readState();
+    let state = await readState();
+    let problem = null;
+
+    // 1. Renew with the saved cookies. After a failed renewal, don't try again for a while:
+    //    each attempt opens Chrome for about a minute, and repeated failures may make
+    //    Tesco's security checks stricter.
     if (state.lastFailure && Date.now() - state.lastFailure < BACKOFF_MS) {
-      throw new AuthExpiredError(`${state.message ?? "The last Tesco sign-in renewal failed."} (Not retried for 15 minutes, or until the user signs in again.)`);
+      problem = `${state.message ?? "The last Tesco sign-in renewal failed."} (Renewal not retried for 15 minutes.)`;
+    } else {
+      const saved = await readJarFile();
+      const refreshCookie = saved.find((c) => c.name === "OAuth.RefreshToken" && (c.expires === -1 || c.expires > Date.now() / 1000));
+      if (!refreshCookie) {
+        problem = "There is no valid Tesco refresh cookie to renew the sign-in with.";
+        log(`renewal skipped: ${problem} Saved sign-in cookies: ${saved.map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID").join(", ") || "none"}`);
+      } else {
+        try {
+          const session = await this.#renew(refreshCookie.value);
+          await writeState({});
+          return session;
+        } catch (err) {
+          problem = err instanceof Error ? err.message : String(err);
+        }
+      }
+      state = { ...state, lastFailure: Date.now(), message: problem };
+      await writeState(state);
     }
-    // Nothing to renew with: ask for a sign-in without contacting Tesco.
-    const saved = await readJarFile();
-    const refreshCookie = saved.find((c) => c.name === "OAuth.RefreshToken" && (c.expires === -1 || c.expires > Date.now() / 1000));
-    if (!refreshCookie) {
-      const msg = "There is no valid Tesco refresh cookie to renew the sign-in with.";
-      log(`renewal skipped: ${msg} Saved sign-in cookies: ${saved.map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID").join(", ") || "none"}`);
-      await writeState({ lastFailure: Date.now(), message: msg });
-      throw new AuthExpiredError(msg);
+
+    // 2. Sign in again with the email and password saved in Windows Credential Manager.
+    const creds = await getTescoCredentials();
+    if (!creds) throw new AuthExpiredError(problem);
+    if (state.autoStop) throw new AuthExpiredError(`${problem} Automatic sign-in is paused: ${state.autoStop}`);
+    if (state.autoFailure && Date.now() - state.autoFailure < AUTO_BACKOFF_MS) {
+      throw new AuthExpiredError(`${problem} Automatic sign-in failed recently (${state.autoMessage ?? "unknown reason"}), so it waits 6 hours before trying again.`);
     }
     try {
-      const session = await this.#renew(refreshCookie.value);
+      const session = await this.#autoSignIn(creds);
       await writeState({});
       return session;
     } catch (err) {
-      await writeState({ lastFailure: Date.now(), message: err instanceof Error ? err.message : String(err) });
-      throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      await writeState({ ...state, autoFailure: Date.now(), autoMessage: msg, ...(err?.permanent ? { autoStop: msg } : {}) });
+      throw new AuthExpiredError(`Automatic Tesco sign-in didn't work: ${msg}`);
+    }
+  }
+
+  /**
+   * Sign in on Tesco's login page with the saved email and password, typed like a person.
+   * Throws (with `permanent` set if the password looks wrong) instead of guessing.
+   */
+  async #autoSignIn({ username, password }) {
+    const ctx = await launchChrome();
+    const fail = (message, permanent = false) => Object.assign(new Error(message), { permanent });
+    try {
+      await restoreJar(ctx); // keep this "device" recognisable to Tesco
+      const page = ctx.pages()[0] ?? (await ctx.newPage());
+      const pause = (ms) => page.waitForTimeout(ms + Math.floor(Math.random() * 400));
+      const bodyText = () => page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
+      const blocked = async () => /failed some security checks|something is not right|access denied|unusual traffic/i.test(await bodyText());
+      const token = async () =>
+        (await ctx.cookies()).filter(isTesco).find((c) => c.name === "OAuth.AccessToken" && c.expires > Date.now() / 1000 + 60)?.value;
+      const before = await token();
+
+      await page.goto(AUTH_LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await pause(1500);
+      if (await blocked()) throw fail("Tesco's security check blocked the sign-in page.");
+      const consent = page.locator("#onetrust-accept-btn-handler");
+      if (await consent.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await consent.click();
+        await pause(800);
+      }
+
+      // Only ever use visible fields and buttons: sign-in pages often keep hidden copies.
+      const emailBox = page.locator('input[type="email"]:visible, input[name="username"]:visible, #username:visible, input[name="email"]:visible').first();
+      const passwordBox = page.locator('input[type="password"]:visible, input[name="password"]:visible, #password:visible').first();
+      if (await emailBox.isVisible({ timeout: 15_000 }).catch(() => false)) {
+        await emailBox.click();
+        await emailBox.fill("");
+        await emailBox.pressSequentially(username, { delay: 60 });
+        await pause(500);
+        if (!(await passwordBox.isVisible().catch(() => false))) {
+          const next = page.locator('button:visible:has-text("Continue"), button:visible:has-text("Next"), button[type="submit"]:visible').first();
+          if (await next.isVisible({ timeout: 2000 }).catch(() => false)) await next.click();
+          await pause(1500);
+        }
+      }
+      if (!(await passwordBox.isVisible({ timeout: 20_000 }).catch(() => false))) {
+        if (await blocked()) throw fail("Tesco's security check blocked the sign-in.");
+        throw fail("Tesco's sign-in page didn't show a password box (its layout may have changed).");
+      }
+      await passwordBox.click();
+      await passwordBox.pressSequentially(password, { delay: 70 });
+      await pause(600);
+      const submit = page.locator('button[type="submit"]:visible').first();
+      if (await submit.isVisible().catch(() => false)) await submit.click();
+      else await passwordBox.press("Enter");
+
+      for (let i = 0; i < 45; i++) {
+        await page.waitForTimeout(1000);
+        const path = page.url().split("?")[0];
+        const now = await token();
+        if (now && now !== before && !/\/account\/(login|auth)/.test(path)) {
+          await page.waitForTimeout(2000); // let the remaining sign-in cookies land
+          const cookies = await saveJar(ctx);
+          const names = cookies.map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID");
+          log(`automatic sign-in OK: ended on ${path}; sign-in cookies: ${names.join(", ")}`);
+          return sessionFromCookies(cookies);
+        }
+        if (i % 5 === 4) {
+          const text = await bodyText();
+          const codeBox = page.locator('input[name="otp"]:visible, input[name="code"]:visible, input[autocomplete="one-time-code"]:visible, #otp:visible, #code:visible').first();
+          if ((await codeBox.isVisible().catch(() => false)) || /verification code|enter the code|one-time/i.test(text)) {
+            throw fail("Tesco asked for a verification code (sent by email or text), so the user needs to sign in by hand.");
+          }
+          if (/(password|details).{0,40}(incorrect|not right|didn.t match|don.t match|wrong)|(incorrect|wrong).{0,20}password|not recogni[sz]e/i.test(text)) {
+            throw fail("Tesco said the saved email or password is wrong. Save the correct one again.", true);
+          }
+          if (await blocked()) throw fail("Tesco's security check blocked the sign-in.");
+        }
+      }
+      log(`automatic sign-in FAILED: still on ${page.url().split("?")[0]} after 45 seconds`);
+      throw fail("Tesco didn't finish the sign-in within 45 seconds.");
+    } finally {
+      await ctx.close().catch(() => {});
     }
   }
 
