@@ -10,7 +10,7 @@
 
 import { createInterface } from "node:readline/promises";
 import { FileTokenStore, sessionFromCookies } from "basketeer";
-import { describeCookies, GROCERIES_URL, launchChrome, LOGIN_URL, saveJar } from "./tesco-auth.mjs";
+import { clearRenewalBackoff, describeCookies, GROCERIES_URL, launchChrome, LOGIN_URL, saveJar } from "./tesco-auth.mjs";
 
 const ctx = await launchChrome();
 try {
@@ -32,6 +32,7 @@ try {
   const cookies = await saveJar(ctx);
   const session = sessionFromCookies(cookies); // throws if the sign-in did not complete
   await new FileTokenStore().save(session);
+  await clearRenewalBackoff();
 
   console.log("\nSigned in. Tesco cookies saved:");
   console.log(`  ${describeCookies(cookies)}`);
