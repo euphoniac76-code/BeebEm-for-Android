@@ -93,18 +93,32 @@ if (-not $SkipWeightProbe -and -not $learned) {
 
 Step "Starting the helper (with a 5-minute watchdog that restarts it if it ever stops)"
 $runner = Join-Path $Dir "run.ps1"
-# conhost --headless runs it with no window at all. (-WindowStyle Hidden alone is ignored when
-# Windows Terminal is the default console, leaving a blank window that is easy to close.)
-$action = New-ScheduledTaskAction -Execute "conhost.exe" `
-  -Argument "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`""
-$atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-$watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-  -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
-  -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $watchdog) -Settings $settings `
-  -Principal $principal -Force | Out-Null
+$me = "$env:USERDOMAIN\$env:USERNAME"
+# The task definition as a script, so it can be run elevated if Windows refuses the change.
+# conhost --headless runs the helper with no window at all (-WindowStyle Hidden alone is ignored
+# when Windows Terminal is the default console, leaving a blank window that is easy to close).
+# The second trigger is a watchdog: every 5 minutes, start the helper again if it has stopped.
+$register = @"
+`$ErrorActionPreference = 'Stop'
+`$action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument '--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$runner"'
+`$atLogon = New-ScheduledTaskTrigger -AtLogOn -User '$me'
+`$watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+`$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+`$principal = New-ScheduledTaskPrincipal -UserId '$me' -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName '$TaskName' -Action `$action -Trigger @(`$atLogon, `$watchdog) -Settings `$settings -Principal `$principal -Force -ErrorAction Stop | Out-Null
+"@
+try {
+  Invoke-Expression $register
+  Write-Host "Background task updated."
+} catch {
+  Write-Host "Windows needs administrator permission to update the background task. Click Yes on the prompt." -ForegroundColor Yellow
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($register))
+  $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+  if ($p.ExitCode -eq 0) { Write-Host "Background task updated (as administrator)." }
+  else { Write-Host "Couldn't update the background task (exit $($p.ExitCode)). The helper still runs with the old settings." -ForegroundColor Yellow }
+}
+StopHelper   # make sure the new definition is the one that runs
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 15
 try {
