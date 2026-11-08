@@ -93,8 +93,10 @@ while (`$true) {
   Start-Sleep -Seconds 10   # restart if it ever stops
 }
 "@ | Set-Content -Encoding UTF8 $runner
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`""
+# conhost --headless runs it with no window at all. (-WindowStyle Hidden alone is ignored when
+# Windows Terminal is the default console, leaving a blank window that is easy to close.)
+$action = New-ScheduledTaskAction -Execute "conhost.exe" `
+  -Argument "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`""
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 # Watchdog: every 5 minutes, start the helper again if something stopped it
 # (ignored while it is already running).

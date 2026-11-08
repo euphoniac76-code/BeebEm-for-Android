@@ -93,8 +93,10 @@ if (-not $SkipWeightProbe -and -not $learned) {
 
 Step "Starting the helper (with a 5-minute watchdog that restarts it if it ever stops)"
 $runner = Join-Path $Dir "run.ps1"
-$action = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`""
+# conhost --headless runs it with no window at all. (-WindowStyle Hidden alone is ignored when
+# Windows Terminal is the default console, leaving a blank window that is easy to close.)
+$action = New-ScheduledTaskAction -Execute "conhost.exe" `
+  -Argument "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`""
 $atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
   -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
