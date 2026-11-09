@@ -1,22 +1,27 @@
 /**
  * The Tesco email and password the helper uses to sign in again when Tesco
- * refuses a renewal. Stored in Windows Credential Manager (entry
- * "tesco-assistant:login", encrypted for the Windows user) through
- * @napi-rs/keyring, so no PowerShell is involved. Save them with save-password.mjs.
+ * refuses a renewal. Stored in Windows Credential Manager (encrypted for the
+ * Windows user) through @napi-rs/keyring, so no PowerShell is involved.
+ * Save them with save-password.mjs.
+ *
+ * Uses the library's standard entry (service "tesco-assistant", account
+ * "tesco.com"). Named entries made with Entry.withTarget() could be written but
+ * not read back on Windows, so they are only cleaned up here.
  *
  * The values stay in memory only: never logged, only typed into tesco.com's login page.
  */
 
-export const TARGET = "tesco-assistant:login";
 const SERVICE = "tesco-assistant";
 const ACCOUNT = "tesco.com";
+export const TARGET = `${SERVICE} (${ACCOUNT})`; // how it's described to the user
+const OLD_TARGETS = ["tesco-assistant:login", "tesco-assistant:tesco.com"];
 
 /** Testing only: a function returning fake credentials, used instead of the real store. */
 export const credentialTestHooks = { provide: null };
 
-async function entry(target = TARGET) {
+async function entry() {
   const { Entry } = await import("@napi-rs/keyring");
-  return Entry.withTarget(target, SERVICE, ACCOUNT);
+  return new Entry(SERVICE, ACCOUNT);
 }
 
 /** { username, password } or null when nothing is saved (or the store can't be read). */
@@ -38,12 +43,18 @@ export async function saveTescoCredentials(username, password) {
   (await entry()).setPassword(JSON.stringify({ u: username, p: password }));
 }
 
-/** Removes the saved login, and the entry an earlier version created with PowerShell. */
+/** Removes the saved login, and the entries earlier versions created. */
 export async function deleteTescoCredentials() {
+  const { Entry } = await import("@napi-rs/keyring");
   let removed = false;
-  for (const t of [TARGET, "tesco-assistant:tesco.com"]) {
+  try {
+    removed = (await entry()).deleteCredential() || removed;
+  } catch {
+    // nothing saved
+  }
+  for (const t of OLD_TARGETS) {
     try {
-      removed = (await entry(t)).deleteCredential() || removed;
+      removed = Entry.withTarget(t, SERVICE, ACCOUNT).deleteCredential() || removed;
     } catch {
       // nothing saved under this name
     }
