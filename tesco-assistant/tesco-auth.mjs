@@ -214,37 +214,69 @@ export class TescoBrowserAuth {
         await pause(800);
       }
 
-      // Only ever use visible fields and buttons: sign-in pages often keep hidden copies.
+      // Only ever use visible fields: sign-in pages often keep hidden copies.
       const emailBox = page.locator('input[type="email"]:visible, input[name="username"]:visible, #username:visible, input[name="email"]:visible').first();
       const passwordBox = page.locator('input[type="password"]:visible, input[name="password"]:visible, #password:visible').first();
-      if (await emailBox.isVisible({ timeout: 15_000 }).catch(() => false)) {
-        await emailBox.click();
-        await emailBox.fill("");
-        await emailBox.pressSequentially(username, { delay: 60 });
-        await pause(500);
-        if (!(await passwordBox.isVisible().catch(() => false))) {
-          const next = page.locator('button:visible:has-text("Continue"), button:visible:has-text("Next"), button[type="submit"]:visible').first();
-          if (await next.isVisible({ timeout: 2000 }).catch(() => false)) await next.click();
-          await pause(1500);
-        }
-      }
-      if (!(await passwordBox.isVisible({ timeout: 20_000 }).catch(() => false))) {
-        if (await blocked()) throw fail("Tesco's security check blocked the sign-in.");
-        const shot = join(DIR, "signin-stuck.png");
-        await page.screenshot({ path: shot }).catch(() => {});
-        log(`automatic sign-in FAILED: no password box on ${page.url().split("?")[0]}; screenshot: ${shot}`);
-        throw fail("Tesco's sign-in page didn't show a password box (its layout may have changed).");
-      }
-      await passwordBox.click();
-      await passwordBox.pressSequentially(password, { delay: 70 });
-      await pause(600);
-      const submit = page.locator('button[type="submit"]:visible').first();
-      if (await submit.isVisible().catch(() => false)) await submit.click();
-      else await passwordBox.press("Enter");
+      const shot = async (name) => {
+        const file = join(DIR, `signin-${name}.png`);
+        await page.screenshot({ path: file }).catch(() => {});
+        return file;
+      };
+      // Move the mouse to a field the way a person would (not a teleporting click), then click it.
+      const humanClick = async (box) => {
+        const b = await box.boundingBox();
+        if (!b) return box.click();
+        const x = b.x + b.width * (0.3 + Math.random() * 0.4);
+        const y = b.y + b.height * (0.35 + Math.random() * 0.3);
+        await page.mouse.move(x - 120 - Math.random() * 200, y + 60 + Math.random() * 120);
+        await page.mouse.move(x, y, { steps: 18 + Math.floor(Math.random() * 12) });
+        await pause(150);
+        await page.mouse.down();
+        await page.waitForTimeout(60 + Math.floor(Math.random() * 60));
+        await page.mouse.up();
+      };
 
+      /** Email, then password; each submitted with Enter in its own box (no guessing which button). */
+      const enterDetails = async (round) => {
+        if (await emailBox.isVisible({ timeout: 15_000 }).catch(() => false)) {
+          await humanClick(emailBox);
+          await emailBox.fill("");
+          await emailBox.pressSequentially(username, { delay: 70 + Math.floor(Math.random() * 40) });
+          await pause(600);
+          await shot(`${round}-1-email`);
+          if (!(await passwordBox.isVisible().catch(() => false))) {
+            await emailBox.press("Enter");
+            await pause(1800);
+          }
+        }
+        if (!(await passwordBox.isVisible({ timeout: 20_000 }).catch(() => false))) {
+          if (await blocked()) throw fail("Tesco's security check blocked the sign-in.");
+          const file = await shot("stuck");
+          log(`automatic sign-in FAILED: no password box on ${page.url().split("?")[0]}; screenshot: ${file}`);
+          throw fail("Tesco's sign-in page didn't show a password box (its layout may have changed).");
+        }
+        await humanClick(passwordBox);
+        await passwordBox.pressSequentially(password, { delay: 80 + Math.floor(Math.random() * 40) });
+        await pause(700);
+        await passwordBox.press("Enter");
+        await page.waitForTimeout(4000);
+        const file = await shot(`${round}-2-after-password`);
+        log(`automatic sign-in round ${round}: details entered; now on ${page.url().split("?")[0]} (screenshot ${file})`);
+      };
+
+      await enterDetails(1);
+      let rounds = 1;
       for (let i = 0; i < 45; i++) {
         await page.waitForTimeout(1000);
         const path = page.url().split("?")[0];
+        // Tesco's "challenges" page sometimes just asks for the email again: go through it once more.
+        if (rounds === 1 && i >= 2 && (await emailBox.isVisible().catch(() => false)) && !(await token())) {
+          log(`automatic sign-in: Tesco asked for the email again on ${path}; entering the details once more`);
+          rounds = 2;
+          await enterDetails(2);
+          i = 0;
+          continue;
+        }
         const now = await token();
         if (now && now !== before && !/\/account\/(login|auth)/.test(path)) {
           await page.waitForTimeout(2000); // let the remaining sign-in cookies land
@@ -266,10 +298,9 @@ export class TescoBrowserAuth {
         }
       }
       // Keep a picture of where it got stuck (on this laptop only) so the cause can be seen.
-      const shot = join(DIR, "signin-stuck.png");
-      await page.screenshot({ path: shot }).catch(() => {});
+      const stuck = await shot("stuck");
       const heading = (await bodyText()).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3).join(" | ").slice(0, 160);
-      log(`automatic sign-in FAILED: still on ${page.url().split("?")[0]} after 45 seconds; page starts: "${heading}"; screenshot: ${shot}`);
+      log(`automatic sign-in FAILED: still on ${page.url().split("?")[0]} after 45 seconds; page starts: "${heading}"; screenshot: ${stuck}`);
       throw fail(`Tesco didn't finish the sign-in within 45 seconds (stuck on ${page.url().split("?")[0]}).`);
     } finally {
       await ctx.close().catch(() => {});
