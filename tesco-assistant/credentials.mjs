@@ -27,7 +27,9 @@ export async function getTescoCredentials() {
     if (!raw) return null;
     const j = JSON.parse(raw);
     return j.u && j.p ? { username: j.u, password: j.p } : null;
-  } catch {
+  } catch (err) {
+    // Never includes the password: only the store's error message.
+    console.log(new Date().toISOString(), "[credentials] couldn't read the saved Tesco login:", err instanceof Error ? err.message : String(err));
     return null;
   }
 }

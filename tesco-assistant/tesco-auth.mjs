@@ -169,7 +169,10 @@ export class TescoBrowserAuth {
 
     // 2. Sign in again with the email and password saved in Windows Credential Manager.
     const creds = await getTescoCredentials();
-    if (!creds) throw new AuthExpiredError(problem);
+    if (!creds) {
+      log("automatic sign-in skipped: no Tesco login is saved (use the 'Tesco password' shortcut)");
+      throw new AuthExpiredError(`${problem} No Tesco password is saved for automatic sign-in: double-click 'Tesco password' on the laptop's desktop to save it.`);
+    }
     if (state.autoStop) throw new AuthExpiredError(`${problem} Automatic sign-in is paused: ${state.autoStop}`);
     if (state.autoFailure && Date.now() - state.autoFailure < AUTO_BACKOFF_MS) {
       throw new AuthExpiredError(`${problem} Automatic sign-in failed recently (${state.autoMessage ?? "unknown reason"}), so it waits 6 hours before trying again.`);

@@ -13,7 +13,7 @@ import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { deleteTescoCredentials, saveTescoCredentials, TARGET } from "./credentials.mjs";
+import { deleteTescoCredentials, getTescoCredentials, saveTescoCredentials, TARGET } from "./credentials.mjs";
 
 const STATE = join(homedir(), ".basketeer", "renewal-state.json"); // lets automatic sign-in try again at once
 
@@ -49,7 +49,9 @@ try {
     await deleteTescoCredentials(); // also clears the older PowerShell-made entry
     await saveTescoCredentials(user, pass);
     await rm(STATE, { force: true });
-    console.log(`\nSaved as "${TARGET}". You can view or remove it in Control Panel > Credential Manager.`);
+    const check = await getTescoCredentials();
+    if (check?.username !== user || check?.password !== pass) throw new Error("it was saved but couldn't be read back.");
+    console.log(`\nSaved and checked as "${TARGET}". You can view or remove it in Control Panel > Credential Manager.`);
   }
 } catch (err) {
   console.error(`\nCouldn't save the Tesco login: ${err instanceof Error ? err.message : err}`);
