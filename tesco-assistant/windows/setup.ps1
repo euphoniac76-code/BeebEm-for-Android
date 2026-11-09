@@ -33,15 +33,67 @@ function WingetInstall($id, $name) {
   winget install --id $id -e --silent --accept-package-agreements --accept-source-agreements | Out-Host
   RefreshPath
 }
-function RunAdmin($command) {
-  # Runs one command elevated (Windows asks for permission once per call).
-  $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
-    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command $command"
-  if ($p.ExitCode -ne 0) { throw "Admin step failed (exit $($p.ExitCode)): $command" }
+function RunAdmin($exe, $arguments) {
+  # Runs one program elevated (Windows asks for permission once per call). No PowerShell wrapper.
+  $p = Start-Process $exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList $arguments
+  if ($p.ExitCode -ne 0) { throw "Admin step failed (exit $($p.ExitCode)): $exe $arguments" }
+}
 }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
   throw "winget is missing. Install 'App Installer' from the Microsoft Store, then run this again."
+}
+
+# Register the helper's background task from a task file with Windows' own schtasks.exe.
+# It starts node.exe directly (no PowerShell), with no window (conhost --headless), when you
+# sign in to Windows, and every 5 minutes as a watchdog (ignored while it is already running).
+function Register-HelperTask {
+  $node = (Get-Command node -ErrorAction Stop).Source
+  $log = Join-Path $Dir "server.log"
+  $me = "$env:USERDOMAIN\$env:USERNAME"
+  $start = (Get-Date).AddMinutes(1).ToString("s")
+  $e = { param($s) [Security.SecurityElement]::Escape($s) }
+  $taskArgs = "--headless `"$node`" server.mjs --http 8787 --log `"$log`""
+  $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>tesco-assistant: lets Claude use your Tesco account</Description></RegistrationInfo>
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled><UserId>$(& $e $me)</UserId></LogonTrigger>
+    <TimeTrigger><Enabled>true</Enabled><StartBoundary>$start</StartBoundary>
+      <Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author"><UserId>$(& $e $me)</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>conhost.exe</Command>
+      <Arguments>$(& $e $taskArgs)</Arguments>
+      <WorkingDirectory>$(& $e $Dir)</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
+  $xmlFile = Join-Path $Dir "task.xml"
+  $xml | Set-Content -Encoding Unicode $xmlFile
+  & schtasks.exe /Create /TN $TaskName /XML $xmlFile /F 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { Write-Host "Background task updated."; return }
+  Write-Host "Windows needs administrator permission to update the background task. Click Yes on the prompt." -ForegroundColor Yellow
+  $p = Start-Process schtasks.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+    -ArgumentList "/Create /TN `"$TaskName`" /XML `"$xmlFile`" /F"
+  if ($p.ExitCode -eq 0) { Write-Host "Background task updated (as administrator)." }
+  else { Write-Host "Couldn't update the background task (exit $($p.ExitCode))." -ForegroundColor Yellow }
 }
 
 Step "1/7 Installing Node.js, Chrome and cloudflared"
@@ -79,33 +131,10 @@ if ($LASTEXITCODE -ne 0) { throw "Tesco sign-in did not complete. Run this setup
 Pop-Location
 
 Step "4/7 Installing the Cloudflare Tunnel service (Windows will ask for permission)"
-RunAdmin "cloudflared service uninstall 2>`$null; cloudflared service install $TunnelToken"
+RunAdmin "cmd.exe" "/c cloudflared service uninstall >nul 2>&1 & cloudflared service install $TunnelToken"
 
 Step "5/7 Starting the helper (now and whenever you sign in to Windows)"
-$log = Join-Path $Dir "server.log"
-$runner = Join-Path $Dir "run.ps1"
-@"
-`$env:TESCO_HTTP_PORT = '8787'
-Set-Location '$Dir'
-while (`$true) {
-  node server.mjs *>> '$log'
-  Start-Sleep -Seconds 10   # restart if it ever stops
-}
-"@ | Set-Content -Encoding UTF8 $runner
-# conhost --headless runs it with no window at all. (-WindowStyle Hidden alone is ignored when
-# Windows Terminal is the default console, leaving a blank window that is easy to close.)
-$action = New-ScheduledTaskAction -Execute "conhost.exe" `
-  -Argument "--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runner`""
-$atLogon = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
-# Watchdog: every 5 minutes, start the helper again if something stopped it
-# (ignored while it is already running).
-$watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-  -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
-  -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $watchdog) -Settings $settings `
-  -Principal $principal -Force | Out-Null
+Register-HelperTask
 Start-ScheduledTask -TaskName $TaskName
 
 Step "6/7 Power settings"
@@ -114,26 +143,18 @@ if (-not $KeepAwakeOnPower) {
   Write-Host "(Re-run with -KeepAwakeOnPower to stop it sleeping when plugged in.)"
 } else {
   # AC power only: never sleep, and closing the lid does nothing. Battery behaviour is unchanged.
-  RunAdmin "powercfg /change standby-timeout-ac 0; powercfg /change hibernate-timeout-ac 0; powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0; powercfg /setactive SCHEME_CURRENT"
+  RunAdmin "cmd.exe" "/c powercfg /change standby-timeout-ac 0 && powercfg /change hibernate-timeout-ac 0 && powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0 && powercfg /setactive SCHEME_CURRENT"
   Write-Host "Done: when plugged in, the laptop no longer sleeps, even with the lid closed."
 }
 
 Step "7/7 Adding the 'Tesco sign-in' desktop shortcut"
-$signinScript = Join-Path $Dir "signin.ps1"
-@"
-Write-Host 'Re-signing in to Tesco...' -ForegroundColor Cyan
-Stop-ScheduledTask -TaskName '$TaskName' -ErrorAction SilentlyContinue
-Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { `$_.CommandLine -like '*server.mjs*' } | ForEach-Object { Stop-Process -Id `$_.ProcessId -Force }
-Set-Location '$Dir'
-node login.mjs
-Start-ScheduledTask -TaskName '$TaskName'
-Write-Host 'Done. You can close this window.' -ForegroundColor Green
-Read-Host 'Press Enter to close'
-"@ | Set-Content -Encoding UTF8 $signinScript
+# Runs the Node sign-in directly in an ordinary command prompt: no PowerShell, and the helper
+# keeps running (it picks up the new sign-in by itself).
+Remove-Item (Join-Path $Dir "signin.ps1") -ErrorAction SilentlyContinue
 $shell = New-Object -ComObject WScript.Shell
 $lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Tesco sign-in.lnk"))
-$lnk.TargetPath = "powershell.exe"
-$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$signinScript`""
+$lnk.TargetPath = "cmd.exe"
+$lnk.Arguments = "/k node login.mjs"
 $lnk.WorkingDirectory = $Dir
 $lnk.Save()
 

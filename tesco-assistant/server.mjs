@@ -27,6 +27,28 @@ import * as basketeer from "basketeer";
 const { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore } = basketeer;
 import { z } from "zod";
 import { loadFormat, nearestOption, sendWeighted, soldBy, soldByText } from "./weights.mjs";
+import { createWriteStream } from "node:fs";
+import { format as formatLog } from "node:util";
+
+// Command-line options (so Windows can start the helper directly, without a PowerShell wrapper):
+//   --http <port>   serve MCP over HTTP on 127.0.0.1:<port> (same as TESCO_HTTP_PORT)
+//   --log <file>    append all output to <file>
+const argValue = (name) => {
+  const i = process.argv.indexOf(name);
+  return i > 0 ? process.argv[i + 1] : undefined;
+};
+if (argValue("--http")) process.env.TESCO_HTTP_PORT = argValue("--http");
+const logFile = argValue("--log");
+if (logFile) {
+  const out = createWriteStream(logFile, { flags: "a" });
+  const write = (...a) => out.write(formatLog(...a) + "\n");
+  console.log = console.info = console.warn = console.error = write;
+  process.on("uncaughtException", (err) => {
+    write(new Date().toISOString(), "[fatal]", err?.stack ?? err);
+    out.end(() => process.exit(1)); // Windows restarts the helper
+  });
+  process.on("unhandledRejection", (err) => write(new Date().toISOString(), "[unhandled]", err?.stack ?? err));
+}
 
 // Auth mode. "browser" (computer with Chrome): refresh by briefly opening Chrome.
 // "cookies" (Android/Termux, or anywhere without Chrome): no browser; when the
@@ -573,7 +595,7 @@ const authBackend =
       : undefined // older basketeer: no refresh, the user re-imports cookies when the session expires
     : new (await import("./tesco-auth.mjs")).TescoBrowserAuth(); // renews via Chrome, keeping the full cookie jar
 const client = new Basketeer({ session: await store.load(), store, authBackend });
-const httpPort = Number(process.env.TESCO_HTTP_PORT || 0);
+const httpPort = Number(argValue("--http") || process.env.TESCO_HTTP_PORT || 0);
 
 /**
  * Keep-alive (laptop mode): renew the hourly Tesco token ~15 minutes before it

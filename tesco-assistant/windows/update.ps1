@@ -28,6 +28,58 @@ function StopHelper {
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+# Register the helper's background task from a task file with Windows' own schtasks.exe.
+# It starts node.exe directly (no PowerShell), with no window (conhost --headless), when you
+# sign in to Windows, and every 5 minutes as a watchdog (ignored while it is already running).
+function Register-HelperTask {
+  $node = (Get-Command node -ErrorAction Stop).Source
+  $log = Join-Path $Dir "server.log"
+  $me = "$env:USERDOMAIN\$env:USERNAME"
+  $start = (Get-Date).AddMinutes(1).ToString("s")
+  $e = { param($s) [Security.SecurityElement]::Escape($s) }
+  $taskArgs = "--headless `"$node`" server.mjs --http 8787 --log `"$log`""
+  $xml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>tesco-assistant: lets Claude use your Tesco account</Description></RegistrationInfo>
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled><UserId>$(& $e $me)</UserId></LogonTrigger>
+    <TimeTrigger><Enabled>true</Enabled><StartBoundary>$start</StartBoundary>
+      <Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author"><UserId>$(& $e $me)</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>conhost.exe</Command>
+      <Arguments>$(& $e $taskArgs)</Arguments>
+      <WorkingDirectory>$(& $e $Dir)</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
+  $xmlFile = Join-Path $Dir "task.xml"
+  $xml | Set-Content -Encoding Unicode $xmlFile
+  & schtasks.exe /Create /TN $TaskName /XML $xmlFile /F 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { Write-Host "Background task updated."; return }
+  Write-Host "Windows needs administrator permission to update the background task. Click Yes on the prompt." -ForegroundColor Yellow
+  $p = Start-Process schtasks.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
+    -ArgumentList "/Create /TN `"$TaskName`" /XML `"$xmlFile`" /F"
+  if ($p.ExitCode -eq 0) { Write-Host "Background task updated (as administrator)." }
+  else { Write-Host "Couldn't update the background task (exit $($p.ExitCode))." -ForegroundColor Yellow }
+}
+
 Step "Stopping the helper"
 StopHelper
 
@@ -43,17 +95,15 @@ if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm install failed" }
 Pop-Location
 
 Step "Updating the 'Tesco sign-in' shortcut"
-$signinScript = Join-Path $Dir "signin.ps1"
-@"
-Write-Host 'Re-signing in to Tesco...' -ForegroundColor Cyan
-Stop-ScheduledTask -TaskName '$TaskName' -ErrorAction SilentlyContinue
-Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { `$_.CommandLine -like '*server.mjs*' } | ForEach-Object { Stop-Process -Id `$_.ProcessId -Force }
-Set-Location '$Dir'
-node login.mjs
-Start-ScheduledTask -TaskName '$TaskName'
-Write-Host 'Done. You can close this window.' -ForegroundColor Green
-Read-Host 'Press Enter to close'
-"@ | Set-Content -Encoding UTF8 $signinScript
+# Runs the Node sign-in directly in an ordinary command prompt: no PowerShell, and the helper
+# keeps running (it picks up the new sign-in by itself).
+Remove-Item (Join-Path $Dir "signin.ps1") -ErrorAction SilentlyContinue
+$shell = New-Object -ComObject WScript.Shell
+$lnk = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Tesco sign-in.lnk"))
+$lnk.TargetPath = "cmd.exe"
+$lnk.Arguments = "/k node login.mjs"
+$lnk.WorkingDirectory = $Dir
+$lnk.Save()
 
 Step "Adding the 'Tesco password' shortcut (save or change the saved Tesco password)"
 $shell = New-Object -ComObject WScript.Shell
@@ -91,33 +141,9 @@ if (-not $SkipWeightProbe -and -not $learned) {
   Pop-Location
 }
 
-Step "Starting the helper (with a 5-minute watchdog that restarts it if it ever stops)"
-$runner = Join-Path $Dir "run.ps1"
-$me = "$env:USERDOMAIN\$env:USERNAME"
-# The task definition as a script, so it can be run elevated if Windows refuses the change.
-# conhost --headless runs the helper with no window at all (-WindowStyle Hidden alone is ignored
-# when Windows Terminal is the default console, leaving a blank window that is easy to close).
-# The second trigger is a watchdog: every 5 minutes, start the helper again if it has stopped.
-$register = @"
-`$ErrorActionPreference = 'Stop'
-`$action = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument '--headless powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$runner"'
-`$atLogon = New-ScheduledTaskTrigger -AtLogOn -User '$me'
-`$watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-`$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
-`$principal = New-ScheduledTaskPrincipal -UserId '$me' -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName '$TaskName' -Action `$action -Trigger @(`$atLogon, `$watchdog) -Settings `$settings -Principal `$principal -Force -ErrorAction Stop | Out-Null
-"@
-try {
-  Invoke-Expression $register
-  Write-Host "Background task updated."
-} catch {
-  Write-Host "Windows needs administrator permission to update the background task. Click Yes on the prompt." -ForegroundColor Yellow
-  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($register))
-  $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden `
-    -ArgumentList "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
-  if ($p.ExitCode -eq 0) { Write-Host "Background task updated (as administrator)." }
-  else { Write-Host "Couldn't update the background task (exit $($p.ExitCode)). The helper still runs with the old settings." -ForegroundColor Yellow }
-}
+Step "Starting the helper (hidden, with a 5-minute watchdog that restarts it if it ever stops)"
+Register-HelperTask
+Remove-Item (Join-Path $Dir "run.ps1") -ErrorAction SilentlyContinue   # old PowerShell wrapper, no longer used
 StopHelper   # make sure the new definition is the one that runs
 Start-ScheduledTask -TaskName $TaskName
 Start-Sleep -Seconds 15
