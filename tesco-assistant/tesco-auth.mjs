@@ -230,6 +230,9 @@ export class TescoBrowserAuth {
       }
       if (!(await passwordBox.isVisible({ timeout: 20_000 }).catch(() => false))) {
         if (await blocked()) throw fail("Tesco's security check blocked the sign-in.");
+        const shot = join(DIR, "signin-stuck.png");
+        await page.screenshot({ path: shot }).catch(() => {});
+        log(`automatic sign-in FAILED: no password box on ${page.url().split("?")[0]}; screenshot: ${shot}`);
         throw fail("Tesco's sign-in page didn't show a password box (its layout may have changed).");
       }
       await passwordBox.click();
@@ -262,8 +265,12 @@ export class TescoBrowserAuth {
           if (await blocked()) throw fail("Tesco's security check blocked the sign-in.");
         }
       }
-      log(`automatic sign-in FAILED: still on ${page.url().split("?")[0]} after 45 seconds`);
-      throw fail("Tesco didn't finish the sign-in within 45 seconds.");
+      // Keep a picture of where it got stuck (on this laptop only) so the cause can be seen.
+      const shot = join(DIR, "signin-stuck.png");
+      await page.screenshot({ path: shot }).catch(() => {});
+      const heading = (await bodyText()).split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3).join(" | ").slice(0, 160);
+      log(`automatic sign-in FAILED: still on ${page.url().split("?")[0]} after 45 seconds; page starts: "${heading}"; screenshot: ${shot}`);
+      throw fail(`Tesco didn't finish the sign-in within 45 seconds (stuck on ${page.url().split("?")[0]}).`);
     } finally {
       await ctx.close().catch(() => {});
     }

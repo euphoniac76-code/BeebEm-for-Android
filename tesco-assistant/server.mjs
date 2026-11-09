@@ -27,7 +27,7 @@ import * as basketeer from "basketeer";
 const { AuthExpiredError, Basketeer, BasketeerError, FileTokenStore } = basketeer;
 import { z } from "zod";
 import { loadFormat, nearestOption, sendWeighted, soldBy, soldByText } from "./weights.mjs";
-import { createWriteStream } from "node:fs";
+import { closeSync, createWriteStream, openSync, readSync, renameSync } from "node:fs";
 import { format as formatLog } from "node:util";
 
 // Command-line options (so Windows can start the helper directly, without a PowerShell wrapper):
@@ -40,6 +40,17 @@ const argValue = (name) => {
 if (argValue("--http")) process.env.TESCO_HTTP_PORT = argValue("--http");
 const logFile = argValue("--log");
 if (logFile) {
+  // A log started by the old PowerShell wrapper is UTF-16; appending UTF-8 to it makes the new
+  // lines unreadable in PowerShell. Keep it as server-old.log and start a fresh file.
+  try {
+    const head = Buffer.alloc(2);
+    const fd = openSync(logFile, "r");
+    readSync(fd, head, 0, 2, 0);
+    closeSync(fd);
+    if (head[0] === 0xff && head[1] === 0xfe) renameSync(logFile, logFile.replace(/(\.log)?$/i, "-old.log"));
+  } catch {
+    // no log yet
+  }
   const out = createWriteStream(logFile, { flags: "a" });
   const write = (...a) => out.write(formatLog(...a) + "\n");
   console.log = console.info = console.warn = console.error = write;
