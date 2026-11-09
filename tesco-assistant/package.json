@@ -11,7 +11,8 @@
     "login": "node login.mjs",
     "start": "node server.mjs",
     "check": "node --check server.mjs && node --check import-cookies.mjs",
-    "import-cookies": "node import-cookies.mjs"
+    "import-cookies": "node import-cookies.mjs",
+    "save-password": "node save-password.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -19,7 +20,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "basketeer": "~0.4.2",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "@napi-rs/keyring": "^2.1.2"
   },
   "license": "MIT",
   "optionalDependencies": {
