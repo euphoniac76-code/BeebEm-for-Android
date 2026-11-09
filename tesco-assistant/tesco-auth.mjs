@@ -197,6 +197,11 @@ export class TescoBrowserAuth {
     const fail = (message, permanent = false) => Object.assign(new Error(message), { permanent });
     try {
       await restoreJar(ctx); // keep this "device" recognisable to Tesco
+      // But start the sign-in from a clean state: leftover expired or provisional sign-in
+      // cookies (e.g. put back by a renewal attempt) can make Tesco loop back to the email step.
+      for (const name of ["OAuth.AccessToken", "UUID", "OAuth.RefreshToken.Provisional"]) {
+        await ctx.clearCookies({ name }).catch(() => {});
+      }
       const page = ctx.pages()[0] ?? (await ctx.newPage());
       const pause = (ms) => page.waitForTimeout(ms + Math.floor(Math.random() * 400));
       const bodyText = () => page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
@@ -270,7 +275,8 @@ export class TescoBrowserAuth {
         await page.waitForTimeout(1000);
         const path = page.url().split("?")[0];
         // Tesco's "challenges" page sometimes just asks for the email again: go through it once more.
-        if (rounds === 1 && i >= 2 && (await emailBox.isVisible().catch(() => false)) && !(await token())) {
+        const fresh = await token();
+        if (rounds === 1 && i >= 2 && (!fresh || fresh === before) && (await emailBox.isVisible().catch(() => false))) {
           log(`automatic sign-in: Tesco asked for the email again on ${path}; entering the details once more`);
           rounds = 2;
           await enterDetails(2);
