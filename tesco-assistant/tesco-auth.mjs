@@ -69,6 +69,7 @@ export async function saveJar(ctx) {
 
 const STATE = join(DIR, "renewal-state.json");
 const BACKOFF_MS = 15 * 60 * 1000;
+const RENEW_RECHECK_MS = 7 * 24 * 60 * 60 * 1000; // while renewals fail, try one again only weekly
 const AUTO_BACKOFF_MS = 6 * 60 * 60 * 1000; // at most one automatic password sign-in attempt per 6 hours after a failure
 const AUTH_LOGIN_URL =
   "https://www.tesco.com/account/auth/en-GB/login?from=https%3A%2F%2Fwww.tesco.com%2Fgroceries%2Fen-GB%2F";
@@ -142,11 +143,17 @@ export class TescoBrowserAuth {
   async refresh() {
     let state = await readState();
     let problem = null;
+    const creds = await getTescoCredentials();
+    const canSignIn = Boolean(creds) && !state.autoStop && !(state.autoFailure && Date.now() - state.autoFailure < AUTO_BACKOFF_MS);
 
     // 1. Renew with the saved cookies. After a failed renewal, don't try again for a while:
     //    each attempt opens Chrome for about a minute, and repeated failures may make
-    //    Tesco's security checks stricter.
-    if (state.lastFailure && Date.now() - state.lastFailure < BACKOFF_MS) {
+    //    Tesco's security checks stricter. When renewals have been failing and the password
+    //    sign-in is available, go straight to it (re-checking renewal once a week).
+    if (canSignIn && state.renewFailedAt && Date.now() - state.renewFailedAt < RENEW_RECHECK_MS) {
+      problem = "Renewals have been failing recently.";
+      log("renewal skipped: renewals have been failing recently; signing in with the saved password instead");
+    } else if (state.lastFailure && Date.now() - state.lastFailure < BACKOFF_MS) {
       problem = `${state.message ?? "The last Tesco sign-in renewal failed."} (Renewal not retried for 15 minutes.)`;
     } else {
       const saved = await readJarFile();
@@ -156,19 +163,19 @@ export class TescoBrowserAuth {
         log(`renewal skipped: ${problem} Saved sign-in cookies: ${saved.map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID").join(", ") || "none"}`);
       } else {
         try {
-          const session = await this.#renew(refreshCookie.value);
+          // With the password sign-in to fall back on, one quick renewal attempt is enough.
+          const session = await this.#renew(refreshCookie.value, { quick: canSignIn });
           await writeState({});
           return session;
         } catch (err) {
           problem = err instanceof Error ? err.message : String(err);
         }
       }
-      state = { ...state, lastFailure: Date.now(), message: problem };
+      state = { ...state, lastFailure: Date.now(), message: problem, renewFailedAt: Date.now() };
       await writeState(state);
     }
 
     // 2. Sign in again with the email and password saved in Windows Credential Manager.
-    const creds = await getTescoCredentials();
     if (!creds) {
       log("automatic sign-in skipped: no Tesco login is saved (use the 'Tesco password' shortcut)");
       throw new AuthExpiredError(`${problem} No Tesco password is saved for automatic sign-in: double-click 'Tesco password' on the laptop's desktop to save it.`);
@@ -179,7 +186,7 @@ export class TescoBrowserAuth {
     }
     try {
       const session = await this.#autoSignIn(creds);
-      await writeState({});
+      await writeState(state.renewFailedAt ? { renewFailedAt: state.renewFailedAt } : {}); // remember renewals fail
       return session;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -313,7 +320,7 @@ export class TescoBrowserAuth {
     }
   }
 
-  async #renew(refreshBefore) {
+  async #renew(refreshBefore, { quick = false } = {}) {
     const ctx = await launchChrome();
     try {
       const restored = await restoreJar(ctx, { withExpiredAuth: true });
@@ -342,8 +349,9 @@ export class TescoBrowserAuth {
       let r = await attempt(REFRESH_URL, 25, "step 1");
       // Tesco sometimes answers with only a provisional sign-in (OAuth.RefreshToken.Provisional).
       // Let its groceries page finish loading, then ask for the token once more.
-      if (!r.ok && !r.path.includes("/account/login")) r = await attempt(GROCERIES_URL, 15, "step 2 (groceries page)");
-      if (!r.ok && !r.path.includes("/account/login")) r = await attempt(REFRESH_URL, 20, "step 3 (renew again)");
+      // (Skipped in quick mode, when the password sign-in can take over: these extra steps rarely help.)
+      if (!quick && !r.ok && !r.path.includes("/account/login")) r = await attempt(GROCERIES_URL, 15, "step 2 (groceries page)");
+      if (!quick && !r.ok && !r.path.includes("/account/login")) r = await attempt(REFRESH_URL, 20, "step 3 (renew again)");
 
       // Tesco replaces the refresh cookie on each renewal and the old one stops working.
       // Don't save until the replacement has arrived (or 15 seconds have passed).
