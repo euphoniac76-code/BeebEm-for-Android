@@ -22,6 +22,10 @@ const PROFILE = join(DIR, "chrome-profile");
 const JAR = join(DIR, "tesco-cookies.json");
 export const LOGIN_URL = "https://www.tesco.com/account/login";
 const GROCERIES_URL = "https://www.tesco.com/groceries/";
+// Tesco's gentle renewal, as its website uses in the background (soft-refresh=true).
+const SOFT_REFRESH_URL =
+  "https://www.tesco.com/account/auth/en-GB/refresh-token?soft-refresh=true" +
+  "&from=https%3A%2F%2Fwww.tesco.com%2Fshop%2Fen-GB%2Flanding%2Fgroceries";
 const REFRESH_URL =
   "https://www.tesco.com/account/auth/en-GB/refresh-token?soft-refresh=false" +
   "&from=https%3A%2F%2Fwww.tesco.com%2Fshop%2Fen-GB%2Flanding%2Fgroceries";
@@ -146,11 +150,34 @@ export class TescoBrowserAuth {
     const creds = await getTescoCredentials();
     const canSignIn = Boolean(creds) && !state.autoStop && !(state.autoFailure && Date.now() - state.autoFailure < AUTO_BACKOFF_MS);
 
+    // 0. Use the existing sign-in, as a person returning to the site would: Tesco's own page
+    //    may renew the token by itself. Cheap (about 25 seconds at most), no password needed.
+    let triedExisting = false;
+    {
+      const saved = await readJarFile();
+      const refreshCookie = saved.find((c) => c.name === "OAuth.RefreshToken" && (c.expires === -1 || c.expires > Date.now() / 1000));
+      const triedRecently = state.existingFailedAt && Date.now() - state.existingFailedAt < BACKOFF_MS;
+      if (refreshCookie && !triedRecently) {
+        triedExisting = true;
+        try {
+          const session = await this.#renew(refreshCookie.value, { mode: "existing" });
+          await writeState(state.renewFailedAt ? { renewFailedAt: state.renewFailedAt } : {});
+          return session;
+        } catch (err) {
+          problem = err instanceof Error ? err.message : String(err);
+          state = { ...state, existingFailedAt: Date.now() };
+          await writeState(state);
+        }
+      }
+    }
+
     // 1. Renew with the saved cookies. After a failed renewal, don't try again for a while:
     //    each attempt opens Chrome for about a minute, and repeated failures may make
     //    Tesco's security checks stricter. When renewals have been failing and the password
     //    sign-in is available, go straight to it (re-checking renewal once a week).
-    if (canSignIn && state.renewFailedAt && Date.now() - state.renewFailedAt < RENEW_RECHECK_MS) {
+    if (canSignIn && triedExisting) {
+      log("renewal skipped: the existing sign-in gave no fresh token; signing in with the saved password instead");
+    } else if (canSignIn && state.renewFailedAt && Date.now() - state.renewFailedAt < RENEW_RECHECK_MS) {
       problem = "Renewals have been failing recently.";
       log("renewal skipped: renewals have been failing recently; signing in with the saved password instead");
     } else if (state.lastFailure && Date.now() - state.lastFailure < BACKOFF_MS) {
@@ -321,10 +348,20 @@ export class TescoBrowserAuth {
     }
   }
 
-  async #renew(refreshBefore, { quick = false } = {}) {
+  /**
+   * Get a fresh access token without the password.
+   *  mode "existing": behave like a person returning to the site: open the groceries page and
+   *    let Tesco's own page renew the token, then try Tesco's gentle (soft) renewal.
+   *  mode "forced": Tesco's forced renewal (soft-refresh=false), as the library does.
+   */
+  async #renew(refreshBefore, { quick = false, mode = "forced" } = {}) {
+    const existing = mode === "existing";
+    const what = existing ? "existing sign-in" : "renewal";
     const ctx = await launchChrome();
     try {
-      const restored = await restoreJar(ctx, { withExpiredAuth: true });
+      // A browser that stayed open would no longer hold the expired hourly cookies, so the
+      // "existing" check doesn't put them back; the forced renewal does (it needs them).
+      const restored = await restoreJar(ctx, { withExpiredAuth: !existing });
       const page = ctx.pages()[0] ?? (await ctx.newPage());
       const all = async () => (await ctx.cookies()).filter(isTesco);
       const token = async () => (await all()).find((c) => c.name === "OAuth.AccessToken" && c.expires > Date.now() / 1000 + 60)?.value;
@@ -343,16 +380,22 @@ export class TescoBrowserAuth {
           await new Promise((r) => setTimeout(r, 1000));
         }
         const names = (await all()).map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID");
-        log(`renewal ${label}: ended on ${path}; sign-in cookies now: ${names.join(", ") || "none"}`);
+        log(`${what} ${label}: ended on ${path}; sign-in cookies now: ${names.join(", ") || "none"}`);
         return { ok: false, path };
       };
 
-      let r = await attempt(REFRESH_URL, 25, "step 1");
+      let r;
+      if (existing) {
+        r = await attempt(GROCERIES_URL, 12, "step 1 (groceries page)");
+        if (!r.ok && !r.path.includes("/account/login")) r = await attempt(SOFT_REFRESH_URL, 12, "step 2 (gentle renewal)");
+      } else {
+        r = await attempt(REFRESH_URL, 25, "step 1");
+      }
       // Tesco sometimes answers with only a provisional sign-in (OAuth.RefreshToken.Provisional).
       // Let its groceries page finish loading, then ask for the token once more.
       // (Skipped in quick mode, when the password sign-in can take over: these extra steps rarely help.)
-      if (!quick && !r.ok && !r.path.includes("/account/login")) r = await attempt(GROCERIES_URL, 15, "step 2 (groceries page)");
-      if (!quick && !r.ok && !r.path.includes("/account/login")) r = await attempt(REFRESH_URL, 20, "step 3 (renew again)");
+      if (!existing && !quick && !r.ok && !r.path.includes("/account/login")) r = await attempt(GROCERIES_URL, 15, "step 2 (groceries page)");
+      if (!existing && !quick && !r.ok && !r.path.includes("/account/login")) r = await attempt(REFRESH_URL, 20, "step 3 (renew again)");
 
       // Tesco replaces the refresh cookie on each renewal and the old one stops working.
       // Don't save until the replacement has arrived (or 15 seconds have passed).
@@ -373,7 +416,7 @@ export class TescoBrowserAuth {
       const cookies = await all();
       const signin = cookies.map((c) => c.name).filter((n) => n.startsWith("OAuth.") || n === "UUID").join(", ");
       log(
-        `renewal ${r.ok ? "OK" : "FAILED"}: restored ${restored} saved cookies, ended on ${r.path}; ` +
+        `${what} ${r.ok ? "OK" : "FAILED"}: restored ${restored} saved cookies, ended on ${r.path}; ` +
           `refresh cookie replaced: ${r.ok ? (rotated ? "yes" : "no (kept the same one)") : "n/a"}; sign-in cookies: ${signin || "none"}; ` +
           `${cookies.length} Tesco cookies:\n  ${describeCookies(cookies)}`,
       );
