@@ -204,11 +204,12 @@ export class TescoBrowserAuth {
     const fail = (message, permanent = false) => Object.assign(new Error(message), { permanent });
     try {
       await restoreJar(ctx); // keep this "device" recognisable to Tesco
-      // But start the sign-in from a clean state: leftover expired or provisional sign-in
-      // cookies (e.g. put back by a renewal attempt) can make Tesco loop back to the email step.
-      for (const name of ["OAuth.AccessToken", "UUID", "OAuth.RefreshToken.Provisional"]) {
-        await ctx.clearCookies({ name }).catch(() => {});
-      }
+      // But start the sign-in from a clean state: remove every sign-in cookie (OAuth.*, UUID).
+      // Leftover expired or provisional ones can make Tesco loop back to the email step, and a
+      // still-valid refresh cookie makes the login page skip the form and go straight to the
+      // groceries page without a usable token (seen 15 Nov). Device cookies are kept.
+      await ctx.clearCookies({ name: /^OAuth\./ }).catch(() => {});
+      await ctx.clearCookies({ name: "UUID" }).catch(() => {});
       const page = ctx.pages()[0] ?? (await ctx.newPage());
       const pause = (ms) => page.waitForTimeout(ms + Math.floor(Math.random() * 400));
       const bodyText = () => page.locator("body").innerText({ timeout: 3000 }).catch(() => "");
