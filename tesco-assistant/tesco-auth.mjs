@@ -151,7 +151,7 @@ export class TescoBrowserAuth {
     const canSignIn = Boolean(creds) && !state.autoStop && !(state.autoFailure && Date.now() - state.autoFailure < AUTO_BACKOFF_MS);
 
     // 0. Use the existing sign-in, as a person returning to the site would: Tesco's own page
-    //    may renew the token by itself. Cheap (about 25 seconds at most), no password needed.
+    //    may renew the token by itself. Cheap (about 15 seconds at most), no password needed.
     let triedExisting = false;
     {
       const saved = await readJarFile();
@@ -386,8 +386,8 @@ export class TescoBrowserAuth {
 
       let r;
       if (existing) {
-        r = await attempt(GROCERIES_URL, 12, "step 1 (groceries page)");
-        if (!r.ok && !r.path.includes("/account/login")) r = await attempt(SOFT_REFRESH_URL, 12, "step 2 (gentle renewal)");
+        r = await attempt(GROCERIES_URL, 7, "step 1 (groceries page)");
+        if (!r.ok && !r.path.includes("/account/login")) r = await attempt(SOFT_REFRESH_URL, 7, "step 2 (gentle renewal)");
       } else {
         r = await attempt(REFRESH_URL, 25, "step 1");
       }
